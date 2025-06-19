@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "weather-bot"
+version = "0.1.0"
+description = ""
+authors = ["user <ivan.isaev7@icloud.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+apscheduler = "^3.11.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
