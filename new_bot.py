@@ -2,17 +2,17 @@ import re
 import requests
 import asyncio
 from bs4 import BeautifulSoup
-from telegram import Bot, Update, ReplyKeyboardMarkup
-from telegram.ext import Application, MessageHandler, ContextTypes, CommandHandler, filters
+from datetime import datetime, timedelta
+from telegram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 BOT_TOKEN = '7044099465:AAEKAmQZ5B-JFNLZgA5Ze661m6_FzQCpa4Y'
-USER_CHAT_ID = '457829882'
+USER_CHAT_ID = '191742166'
 
 bot = Bot(token=BOT_TOKEN)
 
 CONDITIONS = {
-    "ясно": "ну, всё ясно ☀️",
+    "ясно": "ну, всё ясно ",
     "малооблачно": "чучутка облачно 🌤",
     "облачно с прояснениями": "чучутка облачно 🌤",
     "облачно": "так себе, облачно ☁️",
@@ -75,57 +75,31 @@ def fetch_forecast_from_html():
             f"{emoji} {RU_PARTS[key]}: {temp.text.strip()} (по ощущениям {feels.text.strip()}), {cond}"
         )
 
-    return f"📅 Прогноз на день после сегодня ({date_str})🔮:\n\n" + "\n".join(result)
+    return f"📅 Прогноз на томороу  ☺️({date_str}):\n\n" + "\n".join(result)
 
 
-async def send_tomorrow_weather(bot_instance: Bot = None, chat_id: str = USER_CHAT_ID):
+async def send_tomorrow_weather():
     try:
         forecast = fetch_forecast_from_html()
-        await (bot_instance or bot).send_message(chat_id=chat_id, text=forecast)
+        await bot.send_message(chat_id=USER_CHAT_ID, text=forecast)
     except Exception as e:
-        await (bot_instance or bot).send_message(chat_id=chat_id, text=f"⚠️ Ошибка прогноза на завтра: {e}")
+        await bot.send_message(chat_id=USER_CHAT_ID, text=f"⚠️ Ошибка прогноза на завтра: {e}")
 
 
 async def send_today_weather():
     await bot.send_message(chat_id=USER_CHAT_ID, text="🌤 Прогноз на сегодня недоступен.")
 
 
-async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text == "🌤 Прогноз на завтра":
-        await send_tomorrow_weather(chat_id=update.effective_chat.id)
-
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = [["🌤 Прогноз на завтра"]]
-    markup = ReplyKeyboardMarkup(kb, resize_keyboard=True)
-    await update.message.reply_text("👋 Привет! Я покажу тебе прогноз на завтра.", reply_markup=markup)
-
-
-async def start_bot():
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(MessageHandler(filters.TEXT, handle_button))
-
-    loop = asyncio.get_running_loop()
+async def main():
     scheduler = AsyncIOScheduler()
     scheduler.add_job(send_today_weather, trigger='cron', hour=8, minute=45)
-    scheduler.add_job(
-        lambda: asyncio.run_coroutine_threadsafe(send_tomorrow_weather(app.bot), loop),
-        trigger='cron',
-        hour=19,
-        minute=30
-    )
+    scheduler.add_job(send_tomorrow_weather, trigger='cron', hour=14, minute=26)
     scheduler.start()
 
     print("🤖 Бот запущен.")
-    await app.run_polling()
+    while True:
+        await asyncio.sleep(3600)
 
 
 if __name__ == "__main__":
-    import nest_asyncio
-    nest_asyncio.apply()
-
-    loop = asyncio.get_event_loop()
-    loop.create_task(start_bot())
-    loop.run_forever()
+    asyncio.run(main())
