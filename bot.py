@@ -1,13 +1,16 @@
 import re
+
 import requests
 import asyncio
 from bs4 import BeautifulSoup
 from telegram import Bot, Update, ReplyKeyboardMarkup
 from telegram.ext import Application, MessageHandler, ContextTypes, CommandHandler, filters
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from datetime import datetime, timedelta
 
 BOT_TOKEN = '7044099465:AAEKAmQZ5B-JFNLZgA5Ze661m6_FzQCpa4Y'
-USER_CHAT_ID = '457829882'
+USER_CHAT_IDS = ['457829882', '191742166']
+
 
 bot = Bot(token=BOT_TOKEN)
 
@@ -47,25 +50,37 @@ def fetch_forecast_from_html():
     response = requests.get(url, headers=headers, timeout=10)
     soup = BeautifulSoup(response.text, "html.parser")
 
-    article = soup.select_one('article[data-day="2_3"]')
-    if not article:
-        raise Exception("Не найден блок <article> с data-day='2_3'")
+    # Русские месяцы
+    months_ru = [
+        '', 'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+        'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'
+    ]
 
-    heading = article.find("h3")
-    date_str = "неизвестно"
-    if heading:
-        match = re.search(r"\d{1,2}\s+[а-яё]+", heading.text.strip().lower())
-        if match:
-            date_str = match.group(0).capitalize()
+    tomorrow = datetime.now() + timedelta(days=1)
+    day = tomorrow.day
+    month = months_ru[tomorrow.month]
+    tomorrow_pattern = re.compile(rf'\b{day}\s+{month}\b', re.IGNORECASE)
 
+    # Ищем article по заголовку, содержащему дату в формате "4 июля"
+    target_article = None
+    for article in soup.select("article[data-day]"):
+        heading = article.find("h3")
+        if heading and tomorrow_pattern.search(heading.text):
+            target_article = article
+            break
+
+    if not target_article:
+        raise Exception(f"Не найден блок <article> с датой '{day} {month}'")
+
+    date_str = f"{day} {month}".capitalize()
     mapping = {'m': 'morning', 'd': 'day', 'e': 'evening'}
     result = []
 
     for prefix, key in mapping.items():
-        part = article.select_one(f'[style="grid-area:{prefix}-part"]')
-        temp = article.select_one(f'[style="grid-area:{prefix}-temp"]')
-        text = article.select_one(f'[style="grid-area:{prefix}-text"]')
-        feels = article.select_one(f'[style="grid-area:{prefix}-feels"]')
+        part = target_article.select_one(f'[style="grid-area:{prefix}-part"]')
+        temp = target_article.select_one(f'[style="grid-area:{prefix}-temp"]')
+        text = target_article.select_one(f'[style="grid-area:{prefix}-text"]')
+        feels = target_article.select_one(f'[style="grid-area:{prefix}-feels"]')
         if not (part and temp and text and feels):
             continue
 
@@ -75,19 +90,25 @@ def fetch_forecast_from_html():
             f"{emoji} {RU_PARTS[key]}: {temp.text.strip()} (по ощущениям {feels.text.strip()}), {cond}"
         )
 
-    return f"📅 Прогноз на день после сегодня ({date_str})🔮:\n\n" + "\n".join(result)
+    return f"📅 Прогноз на {date_str} 🔮:\n\n" + "\n".join(result)
 
 
-async def send_tomorrow_weather(bot_instance: Bot = None, chat_id: str = USER_CHAT_ID):
+
+async def send_tomorrow_weather(bot_instance: Bot = None, chat_ids: list[str] = None):
     try:
         forecast = fetch_forecast_from_html()
-        await (bot_instance or bot).send_message(chat_id=chat_id, text=forecast)
+        for chat_id in (chat_ids or USER_CHAT_IDS):
+            await (bot_instance or bot).send_message(chat_id=chat_id, text=forecast)
     except Exception as e:
-        await (bot_instance or bot).send_message(chat_id=chat_id, text=f"⚠️ Ошибка прогноза на завтра: {e}")
+        for chat_id in (chat_ids or USER_CHAT_IDS):
+            await (bot_instance or bot).send_message(chat_id=chat_id, text=f"⚠️ Ошибка прогноза на завтра: {e}")
+
 
 
 async def send_today_weather():
-    await bot.send_message(chat_id=USER_CHAT_ID, text="🌤 Прогноз на сегодня недоступен.")
+    for chat_id in USER_CHAT_IDS:
+        await bot.send_message(chat_id=chat_id, text="🌤 Прогноз на сегодня недоступен.")
+
 
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -122,6 +143,7 @@ async def start_bot():
     await app.run_polling()
 
 
+
 if __name__ == "__main__":
     import nest_asyncio
     nest_asyncio.apply()
@@ -129,3 +151,6 @@ if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.create_task(start_bot())
     loop.run_forever()
+
+
+
