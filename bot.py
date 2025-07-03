@@ -1,5 +1,4 @@
 import re
-
 import requests
 import asyncio
 from bs4 import BeautifulSoup
@@ -10,7 +9,6 @@ from datetime import datetime, timedelta
 
 BOT_TOKEN = '7044099465:AAEKAmQZ5B-JFNLZgA5Ze661m6_FzQCpa4Y'
 USER_CHAT_IDS = ['457829882', '191742166']
-
 
 bot = Bot(token=BOT_TOKEN)
 
@@ -50,7 +48,6 @@ def fetch_forecast_from_html():
     response = requests.get(url, headers=headers, timeout=10)
     soup = BeautifulSoup(response.text, "html.parser")
 
-    # Русские месяцы
     months_ru = [
         '', 'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
         'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'
@@ -61,7 +58,6 @@ def fetch_forecast_from_html():
     month = months_ru[tomorrow.month]
     tomorrow_pattern = re.compile(rf'\b{day}\s+{month}\b', re.IGNORECASE)
 
-    # Ищем article по заголовку, содержащему дату в формате "4 июля"
     target_article = None
     for article in soup.select("article[data-day]"):
         heading = article.find("h3")
@@ -93,7 +89,6 @@ def fetch_forecast_from_html():
     return f"📅 Прогноз на {date_str} 🔮:\n\n" + "\n".join(result)
 
 
-
 async def send_tomorrow_weather(bot_instance: Bot = None, chat_ids: list[str] = None):
     try:
         forecast = fetch_forecast_from_html()
@@ -104,16 +99,14 @@ async def send_tomorrow_weather(bot_instance: Bot = None, chat_ids: list[str] = 
             await (bot_instance or bot).send_message(chat_id=chat_id, text=f"⚠️ Ошибка прогноза на завтра: {e}")
 
 
-
 async def send_today_weather():
     for chat_id in USER_CHAT_IDS:
         await bot.send_message(chat_id=chat_id, text="🌤 Прогноз на сегодня недоступен.")
 
 
-
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "🌤 Прогноз на завтра":
-        await send_tomorrow_weather(chat_id=update.effective_chat.id)
+        await send_tomorrow_weather(chat_ids=[update.effective_chat.id])
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -143,7 +136,6 @@ async def start_bot():
     await app.run_polling()
 
 
-
 if __name__ == "__main__":
     import nest_asyncio
     nest_asyncio.apply()
@@ -151,6 +143,3 @@ if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.create_task(start_bot())
     loop.run_forever()
-
-
-
