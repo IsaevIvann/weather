@@ -9,6 +9,7 @@ readme = "README.md"
 python = "^3.12"
 apscheduler = "^3.11.0"
 nest-asyncio = "^1.6.0"
+pytz = "^2025.2"
 
 
 [build-system]

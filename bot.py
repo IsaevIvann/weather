@@ -6,9 +6,10 @@ from telegram import Bot, Update, ReplyKeyboardMarkup
 from telegram.ext import Application, MessageHandler, ContextTypes, CommandHandler, filters
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime, timedelta
+from pytz import timezone
 
 BOT_TOKEN = '7044099465:AAEKAmQZ5B-JFNLZgA5Ze661m6_FzQCpa4Y'
-USER_CHAT_IDS = ['457829882', '191742166']
+USER_CHAT_IDS = ['457829882','191742166']
 
 bot = Bot(token=BOT_TOKEN)
 
@@ -38,7 +39,7 @@ ICONS = {
 }
 
 
-def fetch_forecast_from_html():
+def fetch_forecast_from_html(days_ahead: int = 1) -> str:
     url = "https://yandex.ru/pogoda/moscow/details"
     headers = {
         "User-Agent": "Mozilla/5.0",
@@ -53,15 +54,15 @@ def fetch_forecast_from_html():
         'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'
     ]
 
-    tomorrow = datetime.now() + timedelta(days=1)
-    day = tomorrow.day
-    month = months_ru[tomorrow.month]
-    tomorrow_pattern = re.compile(rf'\b{day}\s+{month}\b', re.IGNORECASE)
+    target_date = datetime.now() + timedelta(days=days_ahead)
+    day = target_date.day
+    month = months_ru[target_date.month]
+    date_pattern = re.compile(rf'\b{day}\s+{month}\b', re.IGNORECASE)
 
     target_article = None
     for article in soup.select("article[data-day]"):
         heading = article.find("h3")
-        if heading and tomorrow_pattern.search(heading.text):
+        if heading and date_pattern.search(heading.text):
             target_article = article
             break
 
@@ -91,7 +92,7 @@ def fetch_forecast_from_html():
 
 async def send_tomorrow_weather(bot_instance: Bot = None, chat_ids: list[str] = None):
     try:
-        forecast = fetch_forecast_from_html()
+        forecast = fetch_forecast_from_html(days_ahead=1)
         for chat_id in (chat_ids or USER_CHAT_IDS):
             await (bot_instance or bot).send_message(chat_id=chat_id, text=forecast)
     except Exception as e:
@@ -99,20 +100,27 @@ async def send_tomorrow_weather(bot_instance: Bot = None, chat_ids: list[str] = 
             await (bot_instance or bot).send_message(chat_id=chat_id, text=f"⚠️ Ошибка прогноза на завтра: {e}")
 
 
-async def send_today_weather():
-    for chat_id in USER_CHAT_IDS:
-        await bot.send_message(chat_id=chat_id, text="🌤 Прогноз на сегодня недоступен.")
+async def send_today_weather(bot_instance: Bot = None, chat_ids: list[str] = None):
+    try:
+        forecast = fetch_forecast_from_html(days_ahead=0)
+        for chat_id in (chat_ids or USER_CHAT_IDS):
+            await (bot_instance or bot).send_message(chat_id=chat_id, text=forecast)
+    except Exception as e:
+        for chat_id in (chat_ids or USER_CHAT_IDS):
+            await (bot_instance or bot).send_message(chat_id=chat_id, text=f"⚠️ Ошибка прогноза на сегодня: {e}")
 
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "🌤 Прогноз на завтра":
         await send_tomorrow_weather(chat_ids=[update.effective_chat.id])
+    elif update.message.text == "🌞 Прогноз на сегодня":
+        await send_today_weather(chat_ids=[update.effective_chat.id])
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = [["🌤 Прогноз на завтра"]]
+    kb = [["🌞 Прогноз на сегодня", "🌤 Прогноз на завтра"]]
     markup = ReplyKeyboardMarkup(kb, resize_keyboard=True)
-    await update.message.reply_text("👋 Привет! Я покажу тебе прогноз на завтра.", reply_markup=markup)
+    await update.message.reply_text("👋 Привет! Я покажу тебе прогноз погоды.", reply_markup=markup)
 
 
 async def start_bot():
@@ -122,16 +130,22 @@ async def start_bot():
     app.add_handler(MessageHandler(filters.TEXT, handle_button))
 
     loop = asyncio.get_running_loop()
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(send_today_weather, trigger='cron', hour=8, minute=45)
+    scheduler = AsyncIOScheduler(timezone=timezone("Europe/Moscow"))
+
+    scheduler.add_job(
+        lambda: asyncio.run_coroutine_threadsafe(send_today_weather(app.bot), loop),
+        trigger='cron',
+        hour=7,
+        minute=00
+    )
     scheduler.add_job(
         lambda: asyncio.run_coroutine_threadsafe(send_tomorrow_weather(app.bot), loop),
         trigger='cron',
-        hour=19,
+        hour=22,
         minute=30
     )
-    scheduler.start()
 
+    scheduler.start()
     print("🤖 Бот запущен.")
     await app.run_polling()
 
