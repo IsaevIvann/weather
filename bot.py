@@ -6,7 +6,7 @@ from telegram import Bot, Update, ReplyKeyboardMarkup
 from telegram.ext import Application, MessageHandler, ContextTypes, CommandHandler, filters
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime, timedelta
-from pytz import timezone
+from x import timezone
 
 BOT_TOKEN = '7044099465:AAEKAmQZ5B-JFNLZgA5Ze661m6_FzQCpa4Y'
 USER_CHAT_IDS = ['457829882','191742166']
@@ -34,8 +34,8 @@ RU_PARTS = {
 
 ICONS = {
     'morning': '🌅',
-    'day': '🌤',
-    'evening': '🌇',
+    'day': '🏙️ ',
+    'evening': '🌙',
 }
 
 
