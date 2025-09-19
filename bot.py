@@ -2,11 +2,12 @@ import re
 import requests
 import asyncio
 from bs4 import BeautifulSoup
+from pytz import timezone
 from telegram import Bot, Update, ReplyKeyboardMarkup
 from telegram.ext import Application, MessageHandler, ContextTypes, CommandHandler, filters
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime, timedelta
-from datetime import timezone
+
 
 BOT_TOKEN = '7044099465:AAEKAmQZ5B-JFNLZgA5Ze661m6_FzQCpa4Y'
 USER_CHAT_IDS = ['457829882','191742166']
