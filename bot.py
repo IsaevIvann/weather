@@ -88,7 +88,8 @@ def fetch_forecast_from_html(days_ahead: int = 1) -> str:
             f"{emoji} {RU_PARTS[key]}: {temp.text.strip()} (по ощущениям {feels.text.strip()}), {cond}"
         )
 
-    return f"📅 Прогноз на {date_str} 🔮:\n\n" + "\n".join(result)
+    return f"📅 Прогноз на {date_str} 🔮:\n\n" + "\n\n".join(result)
+
 
 
 async def send_tomorrow_weather(bot_instance: Bot = None, chat_ids: list[str] = None):
