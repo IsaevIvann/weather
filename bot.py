@@ -90,6 +90,41 @@ def fetch_forecast_from_html(days_ahead: int = 1) -> str:
 
     return f"📅 Прогноз на {date_str} 🔮:\n\n" + "\n\n".join(result)
 
+def fetch_horoscope_today(sign_slug: str = "scorpio") -> str:
+    """
+    Парсит текст гороскопа с https://horo.mail.ru/prediction/<sign>/today/
+    По умолчанию — Скорпион.
+    """
+    url = f"https://horo.mail.ru/prediction/{sign_slug}/today/"
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "ru-RU,ru;q=0.9",
+    }
+    r = requests.get(url, headers=headers, timeout=15)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    # Основной вариант: абзацы внутри HTML-блока статьи
+    container = (
+        soup.select_one('.article__item_html') or
+        soup.select_one('.article__text') or
+        soup.select_one('[class*="article__text"]')
+    )
+
+    text = ""
+    if container:
+        parts = [p.get_text(" ", strip=True) for p in container.select("p")]
+        text = " ".join([t for t in parts if t])
+
+    # Фолбэк: og:description (короткая версия)
+    if not text:
+        og = soup.select_one('meta[property="og:description"]')
+        if og and og.get("content"):
+            text = og["content"].strip()
+
+    return text or "Не удалось получить гороскоп на сегодня 😕"
+
+
 
 
 async def send_tomorrow_weather(bot_instance: Bot = None, chat_ids: list[str] = None):
@@ -102,9 +137,17 @@ async def send_tomorrow_weather(bot_instance: Bot = None, chat_ids: list[str] = 
             await (bot_instance or bot).send_message(chat_id=chat_id, text=f"⚠️ Ошибка прогноза на завтра: {e}")
 
 
-async def send_today_weather(bot_instance: Bot = None, chat_ids: list[str] = None):
+async def send_today_weather(bot_instance: Bot = None, chat_ids: list[str] = None, include_horoscope: bool = False):
     try:
         forecast = fetch_forecast_from_html(days_ahead=0)
+        if include_horoscope:
+            try:
+                horoscope = fetch_horoscope_today(sign_slug="scorpio")
+                forecast = f"{forecast}\n\n🔮 Гороскоп на сегодня:\n{horoscope}"
+            except Exception as he:
+                # если гороскоп не распарсился — просто отправим погоду и мягкую пометку
+                forecast = f"{forecast}\n\n🔮 Гороскоп на сегодня: не удалось получить ({he})"
+
         for chat_id in (chat_ids or USER_CHAT_IDS):
             await (bot_instance or bot).send_message(chat_id=chat_id, text=forecast)
     except Exception as e:
@@ -112,11 +155,13 @@ async def send_today_weather(bot_instance: Bot = None, chat_ids: list[str] = Non
             await (bot_instance or bot).send_message(chat_id=chat_id, text=f"⚠️ Ошибка прогноза на сегодня: {e}")
 
 
+
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "🌤 Прогноз на завтра":
         await send_tomorrow_weather(chat_ids=[update.effective_chat.id])
     elif update.message.text == "🌞 Прогноз на сегодня":
-        await send_today_weather(chat_ids=[update.effective_chat.id])
+        # присылаем погоду + гороскоп
+        await send_today_weather(chat_ids=[update.effective_chat.id], include_horoscope=True)
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -135,7 +180,7 @@ async def start_bot():
     scheduler = AsyncIOScheduler(timezone=timezone("Europe/Moscow"))
 
     scheduler.add_job(
-        lambda: asyncio.run_coroutine_threadsafe(send_today_weather(app.bot), loop),
+        lambda: asyncio.run_coroutine_threadsafe(send_today_weather(app.bot, include_horoscope=True), loop),
         trigger='cron',
         hour=7,
         minute=00
