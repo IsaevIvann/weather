@@ -92,37 +92,63 @@ def fetch_forecast_from_html(days_ahead: int = 1) -> str:
 
 def fetch_horoscope_today(sign_slug: str = "scorpio") -> str:
     """
-    Парсит текст гороскопа с https://horo.mail.ru/prediction/<sign>/today/
-    По умолчанию — Скорпион.
+    Парсит основной текст гороскопа со страницы horo.mail.ru.
+    Возвращает склеенный текст абзацев без служебных блоков.
     """
     url = f"https://horo.mail.ru/prediction/{sign_slug}/today/"
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept-Language": "ru-RU,ru;q=0.9",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
     }
     r = requests.get(url, headers=headers, timeout=15)
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
 
-    # Основной вариант: абзацы внутри HTML-блока статьи
-    container = (
-        soup.select_one('.article__item_html') or
-        soup.select_one('.article__text') or
-        soup.select_one('[class*="article__text"]')
-    )
+    # 1) базовый блок статьи
+    containers = [
+        soup.select_one('[itemprop="articleBody"]'),
+        soup.select_one('.article__item_html'),
+        soup.select_one('.article__text'),
+        soup.select_one('[class*="article__text"]'),
+    ]
 
-    text = ""
-    if container:
-        parts = [p.get_text(" ", strip=True) for p in container.select("p")]
-        text = " ".join([t for t in parts if t])
+    text_parts: list[str] = []
+    for c in containers:
+        if not c:
+            continue
+        # собираем p, исключая рекламные/служебные
+        for p in c.select('p'):
+            t = p.get_text(" ", strip=True)
+            if not t:
+                continue
+            # фильтры служебных блоков
+            if any(bad in t.lower() for bad in [
+                "читайте также", "поделиться", "реклама", "mail.ru"
+            ]):
+                continue
+            text_parts.append(t)
+        if text_parts:
+            break  # нашли нормальный контейнер — выходим
 
-    # Фолбэк: og:description (короткая версия)
-    if not text:
+    # 2) если ничего не нашли — короткий фолбэк (meta)
+    if not text_parts:
         og = soup.select_one('meta[property="og:description"]')
         if og and og.get("content"):
-            text = og["content"].strip()
+            return og["content"].strip()
+        desc = soup.select_one('meta[name="description"]')
+        if desc and desc.get("content"):
+            return desc["content"].strip()
+        return "Не удалось получить гороскоп на сегодня 😕"
 
-    return text or "Не удалось получить гороскоп на сегодня 😕"
+    # Склеиваем абзацы в один текст
+    text = " ".join(text_parts)
+
+    # лёгкая чистка лишних пробелов/повторов
+    text = re.sub(r'\s{2,}', ' ', text).strip()
+    return text
+
 
 
 
