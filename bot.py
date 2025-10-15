@@ -114,8 +114,9 @@ def _clean(txt: str) -> str:
 
 def fetch_horoscope_yandex_all(day: str = "today") -> str:
     """
-    Яндекс / Дзен: requests + BeautifulSoup, без Playwright.
+    Яндекс / Дзен: requests + BeautifulSoup.
     Берём верхний общий абзац + ВСЕ разделы (Женщины/Мужчины/Любовь/Финансы…).
+    Каждый раздел начинается с новой строки.
     Работает и для обычной страницы темы, и для Turbo.
     """
     suf = "na-segodnya" if day == "today" else "na-zavtra"
@@ -125,8 +126,8 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
         "https://dzen.ru/media-turbo/topic/horoscope-skorpion",             # общий turbo
     ]
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "ru-RU,ru;q=0.9",
         "Cache-Control": "no-cache",
@@ -150,39 +151,50 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
 
             soup = BeautifulSoup(html, "html.parser")
 
-            # 1) Верхний общий абзац (как на твоём скрине)
+            # 1) Верхний общий абзац
             top = ""
-            span = soup.select_one('div[class^="topic-channel--horoscope-widget__textBlock-"] '
-                                   'span[class^="topic-channel--rich-text__text-"]')
+            span = soup.select_one(
+                'div[class^="topic-channel--horoscope-widget__textBlock-"] '
+                'span[class^="topic-channel--rich-text__text-"]'
+            )
             if span:
                 top = _clean(span.get_text(" ", strip=True))
+
+            # fallback — первый осмысленный <p> на странице
             if not top:
-                # fallback: первый осмысленный <p> в статье
                 for p in soup.select("article p, main p, body p"):
                     t = _clean(p.get_text(" ", strip=True))
                     if t and len(t) > 30:
                         top = t
                         break
 
-            # 2) Разделы: карточки виджета
+            # 2) Разделы (карточки)
             sections = []
             container = soup.select_one('div[class^="topic-channel--horoscope-widget__items-"]') or soup
             items = container.select('div[class^="topic-channel--horoscope-widget__item-"]')
 
             for it in items:
                 title_el = it.select_one('div[class^="topic-channel--horoscope-widget__itemTitle-"]')
-                text_el  = it.select_one('div[class^="topic-channel--horoscope-widget__itemText-"]')
+                text_el = it.select_one('div[class^="topic-channel--horoscope-widget__itemText-"]')
+
                 title = _clean(title_el.get_text(" ", strip=True)) if title_el else ""
                 if text_el:
                     body = _clean(text_el.get_text(" ", strip=True))
                 else:
                     # запасной вариант: собрать p/li внутри карточки
-                    parts = [_clean(e.get_text(" ", strip=True)) for e in it.select("p, li") if _clean(e.get_text(" ", strip=True))]
+                    parts = [
+                        _clean(e.get_text(" ", strip=True))
+                        for e in it.select("p, li")
+                        if _clean(e.get_text(" ", strip=True))
+                    ]
                     body = _clean(" ".join(parts))
-                if title or body:
-                    sections.append(f"{title}\n{body}".strip())
 
-            # 3) Если карточек нет — собираем «заголовок → параграфы до следующего»
+                if title or body:
+                    # добавляем с новой строки и жирным заголовком
+                    formatted = f"**{title}**\n{body}" if title else body
+                    sections.append(formatted.strip())
+
+            # 3) fallback: заголовки → параграфы (если карточек нет)
             if not sections:
                 root = soup.select_one("article") or soup.select_one("main") or soup
                 if root:
@@ -198,21 +210,26 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
                             if getattr(sib, "name", None) in ["h2", "h3", "strong", "span"]:
                                 break
                             if getattr(sib, "name", None) in ["p", "li", "div"]:
-                                txt = _clean(BeautifulSoup(str(sib), "html.parser").get_text(" ", strip=True))
+                                txt = BeautifulSoup(str(sib), "html.parser").get_text(" ", strip=True)
                                 if txt:
                                     body_parts.append(txt)
                         body = _clean(" ".join(body_parts))
                         if body:
-                            sections.append(f"{t}\n{body}")
+                            formatted = f"**{t}**\n{body}"
+                            sections.append(formatted)
                         i += 1
 
-            # 4) Склейка и возврат, если что-то нашли
+            # 4) Форматирование финального текста
             chunks = []
             if top:
                 chunks.append(top)
             if sections:
+                # каждый блок с новой строки, разделён пустой строкой
                 chunks.append("\n\n".join(sections))
-            result = _clean("\n\n".join(chunks))
+
+            result = "\n\n".join(chunks).strip()
+            result = re.sub(r"\s{3,}", "\n\n", result)
+
             if result:
                 return result
 
@@ -221,6 +238,7 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
             continue
 
     return f"Не удалось получить гороскоп на сегодня 😕 (ошибка: {last_err})"
+
 
 
 async def send_tomorrow_weather(bot_instance: Bot = None, chat_ids: list[str] = None):
