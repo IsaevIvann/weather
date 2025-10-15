@@ -115,8 +115,8 @@ def _clean(txt: str) -> str:
 def fetch_horoscope_yandex_all(day: str = "today") -> str:
     """
     Яндекс / Дзен: requests + BeautifulSoup.
-    Берём верхний общий абзац + ВСЕ разделы (Женщины/Мужчины/Любовь/Финансы…).
-    Каждый раздел начинается с новой строки.
+    Берём верхний общий абзац + ВСЕ разделы (Женщины/Любовь/Финансы…),
+    исключая "Для мужчин". Каждый раздел с новой строки.
     Работает и для обычной страницы темы, и для Turbo.
     """
     suf = "na-segodnya" if day == "today" else "na-zavtra"
@@ -160,7 +160,7 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
             if span:
                 top = _clean(span.get_text(" ", strip=True))
 
-            # fallback — первый осмысленный <p> на странице
+            # fallback — первый осмысленный <p>
             if not top:
                 for p in soup.select("article p, main p, body p"):
                     t = _clean(p.get_text(" ", strip=True))
@@ -178,10 +178,12 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
                 text_el = it.select_one('div[class^="topic-channel--horoscope-widget__itemText-"]')
 
                 title = _clean(title_el.get_text(" ", strip=True)) if title_el else ""
+                if title.lower().startswith("для мужчин"):
+                    continue  # ⛔️ пропускаем блок "Для мужчин"
+
                 if text_el:
                     body = _clean(text_el.get_text(" ", strip=True))
                 else:
-                    # запасной вариант: собрать p/li внутри карточки
                     parts = [
                         _clean(e.get_text(" ", strip=True))
                         for e in it.select("p, li")
@@ -190,11 +192,10 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
                     body = _clean(" ".join(parts))
 
                 if title or body:
-                    # добавляем с новой строки и жирным заголовком
                     formatted = f"**{title}**\n{body}" if title else body
                     sections.append(formatted.strip())
 
-            # 3) fallback: заголовки → параграфы (если карточек нет)
+            # 3) fallback: заголовки → параграфы
             if not sections:
                 root = soup.select_one("article") or soup.select_one("main") or soup
                 if root:
@@ -202,7 +203,7 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
                     i = 0
                     while i < len(titles):
                         t = _clean(titles[i].get_text(" ", strip=True))
-                        if not t:
+                        if not t or t.lower().startswith("для мужчин"):
                             i += 1
                             continue
                         body_parts = []
@@ -219,12 +220,11 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
                             sections.append(formatted)
                         i += 1
 
-            # 4) Форматирование финального текста
+            # 4) Форматирование
             chunks = []
             if top:
                 chunks.append(top)
             if sections:
-                # каждый блок с новой строки, разделён пустой строкой
                 chunks.append("\n\n".join(sections))
 
             result = "\n\n".join(chunks).strip()
@@ -238,6 +238,7 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
             continue
 
     return f"Не удалось получить гороскоп на сегодня 😕 (ошибка: {last_err})"
+
 
 
 
