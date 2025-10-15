@@ -40,57 +40,49 @@ def fetch_forecast_from_html(days_ahead: int = 1) -> str:
         "Pragma": "no-cache",
     }
 
-    response = requests.get(url, headers=headers, timeout=15)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    # целевая дата
-    target_dt = datetime.now() + timedelta(days=days_ahead)
+    # 1) «Сегодня» в Москве, а не по часовому поясу сервера
+    mz = timezone("Europe/Moscow")
+    target_dt = datetime.now(mz).date() + timedelta(days=days_ahead)
     iso = target_dt.strftime("%Y-%m-%d")
+
+    resp = requests.get(url, headers=headers, timeout=15)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # 2) Сначала — точное совпадение по data-day
+    target_article = soup.select_one(f'article[data-day="{iso}"]')
+
+    # 3) Если нет — подбираем ближайшую по дате из всех карточек
+    if not target_article:
+        closest = None
+        best_delta = None
+        for art in soup.select("article[data-day]"):
+            try:
+                d = datetime.strptime(art.get("data-day"), "%Y-%m-%d").date()
+            except Exception:
+                continue
+            delta = abs((d - target_dt).days)
+            if best_delta is None or delta < best_delta:
+                closest, best_delta = art, delta
+        target_article = closest
+
+    # 4) Если и тут пусто — берём первую карточку на странице (обычно это сегодня)
+    if not target_article:
+        arts = soup.select("article[data-day]")
+        if arts:
+            target_article = arts[0]
+
+    if not target_article:
+        raise Exception(f"Не найден блок прогноза для даты {target_dt.strftime('%-d %B')}")
+
+    # 5) Человеческая дата в русском виде
     months_ru = [
         "", "января", "февраля", "марта", "апреля", "мая", "июня",
         "июля", "августа", "сентября", "октября", "ноября", "декабря",
     ]
-    day = target_dt.day
-    month = months_ru[target_dt.month]
+    date_str = f"{target_dt.day} {months_ru[target_dt.month]}".capitalize()
 
-    # 1) пробуем найти article по data-day
-    target_article = soup.select_one(f'article[data-day="{iso}"]')
-
-    # 2) если нет — ищем по заголовку (учитываем неразрывные пробелы и год)
-    if not target_article:
-        # заменим NBSP на обычные пробелы и поищем регуляркой
-        def norm(t: str) -> str:
-            return t.replace("\xa0", " ").strip() if t else ""
-        date_re = re.compile(rf"\b{day}\s+{month}\b", re.IGNORECASE)
-
-        for article in soup.select("article[data-day]"):
-            h3 = article.find("h3")
-            if h3 and date_re.search(norm(h3.get_text())):
-                target_article = article
-                break
-
-    # 3) если всё ещё нет — возьмём ближайшую по дате карточку по data-day
-    if not target_article:
-        closest = None
-        closest_delta = None
-        for article in soup.select("article[data-day]"):
-            try:
-                adate = datetime.strptime(article.get("data-day"), "%Y-%m-%d")
-            except Exception:
-                continue
-            delta = abs((adate - target_dt).days)
-            if closest is None or delta < closest_delta:
-                closest, closest_delta = article, delta
-        target_article = closest
-
-    if not target_article:
-        raise Exception(f"Не найден блок прогноза для даты {day} {month}")
-
-    # красивый заголовок (без года)
-    date_str = f"{day} {month}".capitalize()
-
-    # разбор утро/день/вечер
+    # 6) Разбор утро/день/вечер
     mapping = {"m": "morning", "d": "day", "e": "evening"}
     RU_PARTS = {'morning': 'Утром', 'day': 'Днём', 'evening': 'Вечером'}
     ICONS = {'morning': '🌅', 'day': '🏙️ ', 'evening': '🌙'}
