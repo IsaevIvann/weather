@@ -136,9 +136,8 @@ def fetch_horoscope_dzen_turbo(day: str = "today") -> str:
 
 def fetch_horoscope_dzen(day: str = "today") -> str:
     """
-    Парсим базовую страницу Дзена:
-    https://dzen.ru/topic/horoscope-skorpion
-    Берём верхний общий блок + нужные подразделы, исключая "для мужчин".
+    Dzen: общий верхний блок + все разделы, КРОМЕ 'для мужчин'.
+    URL темы: https://dzen.ru/topic/horoscope-skorpion
     """
     url = "https://dzen.ru/topic/horoscope-skorpion"
     headers = {
@@ -151,39 +150,63 @@ def fetch_horoscope_dzen(day: str = "today") -> str:
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
 
-    # 1️⃣ общий верхний текст
-    top_texts = []
+    # 1) Верхний общий текст (короткий главный прогноз)
+    top_text = ""
     for span in soup.select('span[class*="rich-text__text-"]'):
-        txt = span.get_text(" ", strip=True)
-        if txt and len(txt) > 30:  # отсечь короткие куски
-            top_texts.append(txt)
-    top_text = top_texts[0] if top_texts else ""
+        t = span.get_text(" ", strip=True)
+        if t and len(t) > 30:   # отсечь короткие подписи
+            top_text = t
+            break
 
-    # 2️⃣ подразделы (для женщин, любовь, финансы и т.д.)
+    # 2) Разделы-элементы виджета (Сегодня: Женщины/Любовь/Финансы/и т.п.)
     items = soup.select('div[class*="horoscope-widget__itemUt"]')
-    parts = []
+    sections: list[str] = []
 
     for item in items:
-        title = item.select_one('div[class*="itemTitle"]')
-        title_text = title.get_text(strip=True).lower() if title else ""
-        if "мужчин" in title_text:
-            continue  # пропускаем блок для мужчин
-        body = item.get_text(" ", strip=True)
+        # Заголовок раздела (напр. "Для женщин", "Любовь", "Финансы")
+        title_el = item.select_one('[class*="itemTitle"]')
+        title = title_el.get_text(" ", strip=True) if title_el else ""
+
+        # Пропускаем раздел "Для мужчин"
+        if title.lower().find("мужчин") != -1:
+            continue
+
+        # Текст раздела — берём только содержимое, без заголовка
+        body_parts = []
+        for el in item.select('div[class*="itemText"], p, li'):
+            txt = el.get_text(" ", strip=True)
+            if not txt:
+                continue
+            low = txt.lower()
+            if any(bad in low for bad in ["читайте также", "поделиться", "реклама", "яндекс дзен"]):
+                continue
+            body_parts.append(txt)
+
+        body = " ".join(body_parts).strip()
         if not body:
             continue
-        parts.append(body)
 
-    # 3️⃣ объединяем
-    full_text = top_text
-    if parts:
-        full_text += "\n\n" + "\n\n".join(parts)
+        # Форматируем: "Заголовок\nТекст", если есть заголовок
+        section_text = f"{title}\n{body}" if title else body
+        sections.append(section_text)
 
-    full_text = re.sub(r"\s{2,}", " ", full_text).strip()
+    # 3) Собираем финальный текст
+    chunks = []
+    if top_text:
+        chunks.append(top_text)
+    if sections:
+        chunks.append("\n\n".join(sections))
 
-    if not full_text:
-        # резерв — Turbo
+    final_text = "\n\n".join(chunks).strip()
+
+    # Фолбэк на Turbo, если вдруг ничего не нашли
+    if not final_text:
         return fetch_horoscope_dzen_turbo(day=day)
-    return full_text
+
+    # Лёгкая чистка
+    final_text = re.sub(r"\s{2,}", " ", final_text)
+    return final_text
+
 
 
 def fetch_horoscope_chain(day: str = "today") -> str:
