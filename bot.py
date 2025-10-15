@@ -74,18 +74,22 @@ def fetch_forecast_from_html(days_ahead: int = 1) -> str:
     return f"📅 Прогноз на {date_str} 🔮:\n\n" + "\n\n".join(result)
 
 
-# ------------------- ГОРOСКОП (Яндекс / Dzen Turbo) ------------------- #
+# ------------------- ГОРOСКОП (Dzen Turbo — все разделы) ------------------- #
 
 def _clean(txt: str) -> str:
     return re.sub(r"\s{2,}", " ", (txt or "").strip())
 
 def fetch_horoscope_yandex_all(day: str = "today") -> str:
     """
-    Тянем гороскоп со статичной Turbo-страницы Дзена.
-    Берём верхний общий абзац + ВСЕ разделы (включая 'для мужчин').
+    Парсит Turbo-страницу Дзена со Скорпионом.
+    Берёт: верхний общий абзац + ВСЕ разделы (в порядке на странице).
+    Поддерживает две возможные турбо-ссылки.
     """
     suf = "na-segodnya" if day == "today" else "na-zavtra"
-    url = f"https://dzen.ru/media-turbo/topic/horoscope-skorpion-{suf}"
+    candidates = [
+        f"https://dzen.ru/media-turbo/topic/horoscope-skorpion-{suf}",
+        "https://dzen.ru/media-turbo/topic/horoscope-skorpion",
+    ]
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept-Language": "ru-RU,ru;q=0.9",
@@ -93,11 +97,24 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
         "Pragma": "no-cache",
     }
 
-    r = requests.get(url, headers=headers, timeout=15)
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "html.parser")
+    html = None
+    last_err = None
+    for url in candidates:
+        try:
+            r = requests.get(url, headers=headers, timeout=15)
+            r.raise_for_status()
+            html = r.text
+            if html and len(html) > 500:  # грубая проверка, что пришло не пустое
+                break
+        except Exception as e:
+            last_err = e
 
-    # 1) Общий верхний абзац — первый осмысленный <p>
+    if not html:
+        raise RuntimeError(f"Не удалось загрузить Turbo-страницу Дзена: {last_err}")
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    # 1) Общий верхний абзац — первый «осмысленный» <p>
     top = ""
     for p in soup.select("article p, main p, body p"):
         t = _clean(p.get_text(" ", strip=True))
@@ -105,48 +122,52 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
             top = t
             break
 
-    # 2) Разделы.
-    # Ищем последовательность "Заголовок (h2/h3/strong/span) -> набор p/li/div до следующего заголовка".
-    root = soup.select_one("article") or soup.select_one("main") or soup
-    titles = root.find_all(["h2", "h3", "strong", "span"])
-    sections = []
-    i = 0
-    while i < len(titles):
-        title = _clean(titles[i].get_text(" ", strip=True))
-        if not title:
-            i += 1
-            continue
-
-        body_parts = []
-        for sib in titles[i].next_siblings:
-            if getattr(sib, "name", None) in ["h2", "h3", "strong", "span"]:
-                break
-            if getattr(sib, "name", None) in ["p", "li", "div"]:
-                txt = _clean(BeautifulSoup(str(sib), "html.parser").get_text(" ", strip=True))
+    # 2) Разделы:
+    # Сценарий А: явные карточки разделов в блоках __itemUt
+    sections_text = []
+    items = soup.select('div[class*="horoscope-widget__itemUt"]')
+    if items:
+        for it in items:
+            title_el = it.select_one('[class*="itemTitle"]')
+            title = _clean(title_el.get_text(" ", strip=True)) if title_el else ""
+            body_parts = []
+            for el in it.select('div[class*="itemText"], p, li'):
+                txt = _clean(el.get_text(" ", strip=True))
                 if txt:
                     body_parts.append(txt)
+            body = _clean(" ".join(body_parts))
+            if body:
+                sections_text.append(f"{title}\n{body}" if title else body)
 
-        body = _clean(" ".join(body_parts))
-        if body:
-            sections.append(f"{title}\n{body}")
+    # Сценарий Б: нет карточек — собираем по заголовкам h2/h3/strong/span
+    if not sections_text:
+        root = soup.select_one("article") or soup.select_one("main") or soup
+        titles = root.find_all(["h2", "h3", "strong", "span"])
+        i = 0
+        while i < len(titles):
+            title = _clean(titles[i].get_text(" ", strip=True))
+            if not title:
+                i += 1
+                continue
+            body_parts = []
+            for sib in titles[i].next_siblings:
+                if getattr(sib, "name", None) in ["h2", "h3", "strong", "span"]:
+                    break
+                if getattr(sib, "name", None) in ["p", "li", "div"]:
+                    txt = _clean(BeautifulSoup(str(sib), "html.parser").get_text(" ", strip=True))
+                    if txt:
+                        body_parts.append(txt)
+            body = _clean(" ".join(body_parts))
+            if body:
+                sections_text.append(f"{title}\n{body}")
+            i += 1
 
-        i += 1
-
-    # Если заголовки не нашлись, попробуем просто собрать все p после верхнего блока
-    if not sections:
-        ps = [_clean(p.get_text(" ", strip=True)) for p in root.select("p")]
-        ps = [t for t in ps if t]
-        if top and ps and ps[0] == top:
-            ps = ps[1:]
-        if ps:
-            sections = ps
-
-    # 3) Склейка результата
+    # 3) Склейка
     chunks = []
     if top:
         chunks.append(top)
-    if sections:
-        chunks.append("\n\n".join(sections))
+    if sections_text:
+        chunks.append("\n\n".join(sections_text))
 
     final_text = _clean("\n\n".join(chunks))
     return final_text or "Не удалось получить гороскоп на сегодня 😕"
