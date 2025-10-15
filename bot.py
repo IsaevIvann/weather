@@ -81,99 +81,44 @@ def _clean(txt: str) -> str:
 
 def fetch_horoscope_yandex_all(day: str = "today") -> str:
     """
-    Парсит Turbo-страницу Дзена со Скорпионом.
-    Берёт: верхний общий абзац + ВСЕ разделы (в порядке на странице).
-    Поддерживает две возможные турбо-ссылки.
+    Парсит все разделы с Дзена (включая общий блок и подразделы).
     """
-    suf = "na-segodnya" if day == "today" else "na-zavtra"
-    candidates = [
-        f"https://dzen.ru/media-turbo/topic/horoscope-skorpion-{suf}",
-        "https://dzen.ru/media-turbo/topic/horoscope-skorpion",
-    ]
+    url = "https://dzen.ru/media-turbo/topic/horoscope-skorpion-na-segodnya"
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept-Language": "ru-RU,ru;q=0.9",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
     }
 
-    html = None
-    last_err = None
-    for url in candidates:
-        try:
-            r = requests.get(url, headers=headers, timeout=15)
-            r.raise_for_status()
-            html = r.text
-            if html and len(html) > 500:  # грубая проверка, что пришло не пустое
-                break
-        except Exception as e:
-            last_err = e
+    r = requests.get(url, headers=headers, timeout=15)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
 
-    if not html:
-        raise RuntimeError(f"Не удалось загрузить Turbo-страницу Дзена: {last_err}")
+    # Общий верхний текст
+    top_block = soup.select_one("div.topic-channel--horoscope-widget__textBlock-10 span.topic-channel--rich-text__text-24")
+    top_text = top_block.get_text(" ", strip=True) if top_block else ""
 
-    soup = BeautifulSoup(html, "html.parser")
+    # Все разделы (для женщин, любовь, финансы, мужчины и т.п.)
+    items = soup.select("div.topic-channel--horoscope-widget__item-Ut")
+    sections = []
+    for it in items:
+        title_el = it.select_one("div.topic-channel--horoscope-widget__itemTitle-3E")
+        text_el = it.select_one("div.topic-channel--horoscope-widget__itemText-3X")
 
-    # 1) Общий верхний абзац — первый «осмысленный» <p>
-    top = ""
-    for p in soup.select("article p, main p, body p"):
-        t = _clean(p.get_text(" ", strip=True))
-        if t and len(t) > 30:
-            top = t
-            break
+        title = title_el.get_text(" ", strip=True) if title_el else ""
+        text = text_el.get_text(" ", strip=True) if text_el else ""
 
-    # 2) Разделы:
-    # Сценарий А: явные карточки разделов в блоках __itemUt
-    sections_text = []
-    items = soup.select('div[class*="horoscope-widget__itemUt"]')
-    if items:
-        for it in items:
-            title_el = it.select_one('[class*="itemTitle"]')
-            title = _clean(title_el.get_text(" ", strip=True)) if title_el else ""
-            body_parts = []
-            for el in it.select('div[class*="itemText"], p, li'):
-                txt = _clean(el.get_text(" ", strip=True))
-                if txt:
-                    body_parts.append(txt)
-            body = _clean(" ".join(body_parts))
-            if body:
-                sections_text.append(f"{title}\n{body}" if title else body)
+        if title or text:
+            sections.append(f"{title}\n{text}".strip())
 
-    # Сценарий Б: нет карточек — собираем по заголовкам h2/h3/strong/span
-    if not sections_text:
-        root = soup.select_one("article") or soup.select_one("main") or soup
-        titles = root.find_all(["h2", "h3", "strong", "span"])
-        i = 0
-        while i < len(titles):
-            title = _clean(titles[i].get_text(" ", strip=True))
-            if not title:
-                i += 1
-                continue
-            body_parts = []
-            for sib in titles[i].next_siblings:
-                if getattr(sib, "name", None) in ["h2", "h3", "strong", "span"]:
-                    break
-                if getattr(sib, "name", None) in ["p", "li", "div"]:
-                    txt = _clean(BeautifulSoup(str(sib), "html.parser").get_text(" ", strip=True))
-                    if txt:
-                        body_parts.append(txt)
-            body = _clean(" ".join(body_parts))
-            if body:
-                sections_text.append(f"{title}\n{body}")
-            i += 1
+    result_parts = []
+    if top_text:
+        result_parts.append(top_text)
+    if sections:
+        result_parts.append("\n\n".join(sections))
 
-    # 3) Склейка
-    chunks = []
-    if top:
-        chunks.append(top)
-    if sections_text:
-        chunks.append("\n\n".join(sections_text))
-
-    final_text = _clean("\n\n".join(chunks))
+    final_text = "\n\n".join(result_parts).strip()
     return final_text or "Не удалось получить гороскоп на сегодня 😕"
 
-
-# ------------------- ОТПРАВКА ------------------- #
 
 async def send_tomorrow_weather(bot_instance: Bot = None, chat_ids: list[str] = None):
     try:
