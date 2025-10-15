@@ -114,105 +114,113 @@ def _clean(txt: str) -> str:
 
 def fetch_horoscope_yandex_all(day: str = "today") -> str:
     """
-    Dzen Turbo: верхний абзац + ВСЕ разделы (устойчивые селекторы).
+    Яндекс / Дзен: requests + BeautifulSoup, без Playwright.
+    Берём верхний общий абзац + ВСЕ разделы (Женщины/Мужчины/Любовь/Финансы…).
+    Работает и для обычной страницы темы, и для Turbo.
     """
     suf = "na-segodnya" if day == "today" else "na-zavtra"
-    candidates = [
-        f"https://dzen.ru/media-turbo/topic/horoscope-skorpion-{suf}",
-        "https://dzen.ru/media-turbo/topic/horoscope-skorpion",
+    urls = [
+        "https://dzen.ru/topic/horoscope-skorpion",                         # обычная тема
+        f"https://dzen.ru/media-turbo/topic/horoscope-skorpion-{suf}",      # turbo-страница на сегодня/завтра
+        "https://dzen.ru/media-turbo/topic/horoscope-skorpion",             # общий turbo
     ]
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-        "Accept-Language": "ru-RU,ru;q=0.9",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ru-RU,ru;q=0.9",
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
-        "Connection": "keep-alive",
         "Referer": "https://dzen.ru/",
+        "Connection": "keep-alive",
     }
 
-    html = None
+    def _clean(s: str) -> str:
+        return re.sub(r"\s{2,}", " ", (s or "").replace("\xa0", " ").strip())
+
     last_err = None
-    for url in candidates:
+    for url in urls:
         try:
             r = requests.get(url, headers=headers, timeout=15)
             r.raise_for_status()
-            if r.text and len(r.text) > 500:
-                html = r.text
-                break
+            html = r.text
+            if not html or len(html) < 500:
+                last_err = "пустой ответ"
+                continue
+
+            soup = BeautifulSoup(html, "html.parser")
+
+            # 1) Верхний общий абзац (как на твоём скрине)
+            top = ""
+            span = soup.select_one('div[class^="topic-channel--horoscope-widget__textBlock-"] '
+                                   'span[class^="topic-channel--rich-text__text-"]')
+            if span:
+                top = _clean(span.get_text(" ", strip=True))
+            if not top:
+                # fallback: первый осмысленный <p> в статье
+                for p in soup.select("article p, main p, body p"):
+                    t = _clean(p.get_text(" ", strip=True))
+                    if t and len(t) > 30:
+                        top = t
+                        break
+
+            # 2) Разделы: карточки виджета
+            sections = []
+            container = soup.select_one('div[class^="topic-channel--horoscope-widget__items-"]') or soup
+            items = container.select('div[class^="topic-channel--horoscope-widget__item-"]')
+
+            for it in items:
+                title_el = it.select_one('div[class^="topic-channel--horoscope-widget__itemTitle-"]')
+                text_el  = it.select_one('div[class^="topic-channel--horoscope-widget__itemText-"]')
+                title = _clean(title_el.get_text(" ", strip=True)) if title_el else ""
+                if text_el:
+                    body = _clean(text_el.get_text(" ", strip=True))
+                else:
+                    # запасной вариант: собрать p/li внутри карточки
+                    parts = [_clean(e.get_text(" ", strip=True)) for e in it.select("p, li") if _clean(e.get_text(" ", strip=True))]
+                    body = _clean(" ".join(parts))
+                if title or body:
+                    sections.append(f"{title}\n{body}".strip())
+
+            # 3) Если карточек нет — собираем «заголовок → параграфы до следующего»
+            if not sections:
+                root = soup.select_one("article") or soup.select_one("main") or soup
+                if root:
+                    titles = root.find_all(["h2", "h3", "strong", "span"])
+                    i = 0
+                    while i < len(titles):
+                        t = _clean(titles[i].get_text(" ", strip=True))
+                        if not t:
+                            i += 1
+                            continue
+                        body_parts = []
+                        for sib in titles[i].next_siblings:
+                            if getattr(sib, "name", None) in ["h2", "h3", "strong", "span"]:
+                                break
+                            if getattr(sib, "name", None) in ["p", "li", "div"]:
+                                txt = _clean(BeautifulSoup(str(sib), "html.parser").get_text(" ", strip=True))
+                                if txt:
+                                    body_parts.append(txt)
+                        body = _clean(" ".join(body_parts))
+                        if body:
+                            sections.append(f"{t}\n{body}")
+                        i += 1
+
+            # 4) Склейка и возврат, если что-то нашли
+            chunks = []
+            if top:
+                chunks.append(top)
+            if sections:
+                chunks.append("\n\n".join(sections))
+            result = _clean("\n\n".join(chunks))
+            if result:
+                return result
+
         except Exception as e:
             last_err = e
+            continue
 
-    if not html:
-        return f"Не удалось получить гороскоп (turbo: {last_err})"
-
-    soup = BeautifulSoup(html, "html.parser")
-
-    # ---- верхний общий абзац (первый осмысленный <p> либо rich-text) ----
-    top_text = ""
-    span = soup.select_one('div[class^="topic-channel--horoscope-widget__textBlock-"] '
-                           'span[class^="topic-channel--rich-text__text-"]')
-    if span:
-        top_text = span.get_text(" ", strip=True)
-    if not top_text:
-        for p in soup.select("article p, main p, body p"):
-            t = p.get_text(" ", strip=True)
-            if t and len(t) > 30:
-                top_text = t
-                break
-
-    # ---- карточки разделов (устойчивые селекторы по началу класса) ----
-    sections = []
-    container = soup.select_one('div[class^="topic-channel--horoscope-widget__items-"]') or soup
-    items = container.select('div[class^="topic-channel--horoscope-widget__item-"]')
-
-    for it in items:
-        title_el = it.select_one('div[class^="topic-channel--horoscope-widget__itemTitle-"]')
-        text_el  = it.select_one('div[class^="topic-channel--horoscope-widget__itemText-"]')
-
-        title = title_el.get_text(" ", strip=True) if title_el else ""
-        if text_el:
-            body = text_el.get_text(" ", strip=True)
-        else:
-            parts = [e.get_text(" ", strip=True) for e in it.select("p, li") if e.get_text(strip=True)]
-            body = " ".join(parts).strip()
-
-        if title or body:
-            sections.append(f"{title}\n{body}".strip())
-
-    # ---- fallback: если карточек нет, собираем «заголовок → параграфы до следующего» ----
-    if not sections:
-        root = soup.select_one("article") or soup.select_one("main") or soup
-        titles = root.find_all(["h2", "h3", "strong", "span"])
-        i = 0
-        while i < len(titles):
-            title = titles[i].get_text(" ", strip=True)
-            if not title:
-                i += 1
-                continue
-            body_parts = []
-            for sib in titles[i].next_siblings:
-                if getattr(sib, "name", None) in ["h2", "h3", "strong", "span"]:
-                    break
-                if getattr(sib, "name", None) in ["p", "li", "div"]:
-                    txt = BeautifulSoup(str(sib), "html.parser").get_text(" ", strip=True)
-                    if txt:
-                        body_parts.append(txt)
-            body = " ".join(body_parts).strip()
-            if body:
-                sections.append(f"{title}\n{body}")
-            i += 1
-
-    # ---- склейка + лёгкая чистка ----
-    chunks = []
-    if top_text:
-        chunks.append(top_text)
-    if sections:
-        chunks.append("\n\n".join(sections))
-
-    final_text = re.sub(r"\s{2,}", " ", "\n\n".join(chunks).strip())
-    return final_text or "Не удалось получить гороскоп на сегодня 😕"
+    return f"Не удалось получить гороскоп на сегодня 😕 (ошибка: {last_err})"
 
 
 async def send_tomorrow_weather(bot_instance: Bot = None, chat_ids: list[str] = None):
