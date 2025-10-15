@@ -33,31 +33,69 @@ ICONS = {'morning': '🌅', 'day': '🏙️ ', 'evening': '🌙'}
 
 def fetch_forecast_from_html(days_ahead: int = 1) -> str:
     url = "https://yandex.ru/pogoda/moscow/details"
-    headers = {"User-Agent": "Mozilla/5.0", "Accept-Language": "ru-RU,ru;q=0.9"}
-    response = requests.get(url, headers=headers, timeout=10)
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "ru-RU,ru;q=0.9",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+
+    response = requests.get(url, headers=headers, timeout=15)
+    response.raise_for_status()
     soup = BeautifulSoup(response.text, "html.parser")
 
-    months_ru = ["", "января", "февраля", "марта", "апреля", "мая", "июня",
-                 "июля", "августа", "сентября", "октября", "ноября", "декабря"]
-    target_date = datetime.now() + timedelta(days=days_ahead)
-    day = target_date.day
-    month = months_ru[target_date.month]
-    date_pattern = re.compile(rf'\b{day}\s+{month}\b', re.IGNORECASE)
+    # целевая дата
+    target_dt = datetime.now() + timedelta(days=days_ahead)
+    iso = target_dt.strftime("%Y-%m-%d")
+    months_ru = [
+        "", "января", "февраля", "марта", "апреля", "мая", "июня",
+        "июля", "августа", "сентября", "октября", "ноября", "декабря",
+    ]
+    day = target_dt.day
+    month = months_ru[target_dt.month]
 
-    target_article = None
-    for article in soup.select("article[data-day]"):
-        heading = article.find("h3")
-        if heading and date_pattern.search(heading.text):
-            target_article = article
-            break
+    # 1) пробуем найти article по data-day
+    target_article = soup.select_one(f'article[data-day="{iso}"]')
+
+    # 2) если нет — ищем по заголовку (учитываем неразрывные пробелы и год)
+    if not target_article:
+        # заменим NBSP на обычные пробелы и поищем регуляркой
+        def norm(t: str) -> str:
+            return t.replace("\xa0", " ").strip() if t else ""
+        date_re = re.compile(rf"\b{day}\s+{month}\b", re.IGNORECASE)
+
+        for article in soup.select("article[data-day]"):
+            h3 = article.find("h3")
+            if h3 and date_re.search(norm(h3.get_text())):
+                target_article = article
+                break
+
+    # 3) если всё ещё нет — возьмём ближайшую по дате карточку по data-day
+    if not target_article:
+        closest = None
+        closest_delta = None
+        for article in soup.select("article[data-day]"):
+            try:
+                adate = datetime.strptime(article.get("data-day"), "%Y-%m-%d")
+            except Exception:
+                continue
+            delta = abs((adate - target_dt).days)
+            if closest is None or delta < closest_delta:
+                closest, closest_delta = article, delta
+        target_article = closest
 
     if not target_article:
-        raise Exception(f"Не найден блок <article> с датой '{day} {month}'")
+        raise Exception(f"Не найден блок прогноза для даты {day} {month}")
 
+    # красивый заголовок (без года)
     date_str = f"{day} {month}".capitalize()
-    mapping = {'m': 'morning', 'd': 'day', 'e': 'evening'}
-    result = []
 
+    # разбор утро/день/вечер
+    mapping = {"m": "morning", "d": "day", "e": "evening"}
+    RU_PARTS = {'morning': 'Утром', 'day': 'Днём', 'evening': 'Вечером'}
+    ICONS = {'morning': '🌅', 'day': '🏙️ ', 'evening': '🌙'}
+
+    result = []
     for prefix, key in mapping.items():
         part = target_article.select_one(f'[style="grid-area:{prefix}-part"]')
         temp = target_article.select_one(f'[style="grid-area:{prefix}-temp"]')
@@ -65,16 +103,19 @@ def fetch_forecast_from_html(days_ahead: int = 1) -> str:
         feels = target_article.select_one(f'[style="grid-area:{prefix}-feels"]')
         if not (part and temp and text and feels):
             continue
-        emoji = ICONS.get(key, '❓')
-        cond = CONDITIONS.get(text.text.strip().lower(), text.text.strip().lower())
+
+        emoji = ICONS.get(key, "❓")
+        cond_text = text.get_text(" ", strip=True)
+        cond = CONDITIONS.get(cond_text.lower(), cond_text)
         result.append(
-            f"{emoji} {RU_PARTS[key]}: {temp.text.strip()} (по ощущениям {feels.text.strip()}), {cond}"
+            f"{emoji} {RU_PARTS[key]}: {temp.get_text(strip=True)} (по ощущениям {feels.get_text(strip=True)}), {cond}"
         )
+
+    if not result:
+        raise Exception("Не удалось разобрать блоки утро/день/вечер")
 
     return f"📅 Прогноз на {date_str} 🔮:\n\n" + "\n\n".join(result)
 
-
-# ------------------- ГОРOСКОП (Dzen Turbo — все разделы) ------------------- #
 
 def _clean(txt: str) -> str:
     return re.sub(r"\s{2,}", " ", (txt or "").strip())
