@@ -74,54 +74,15 @@ def fetch_forecast_from_html(days_ahead: int = 1) -> str:
     return f"📅 Прогноз на {date_str} 🔮:\n\n" + "\n\n".join(result)
 
 
-# ------------------- ГОРOСКОП ------------------- #
+# ------------------- ГОРOСКОП (Яндекс / Dzen Turbo) ------------------- #
 
-def _clean_text(text: str) -> str:
-    return re.sub(r"\s{2,}", " ", (text or "").strip())
+def _clean(txt: str) -> str:
+    return re.sub(r"\s{2,}", " ", (txt or "").strip())
 
-def _clean_blocks(blocks: list[str]) -> str:
-    return _clean_text(" ".join([b for b in blocks if b]))
-
-def fetch_horoscope_mail(sign_slug: str = "scorpio") -> str:
-    """Резерв: horo.mail.ru (на случай, если Дзен недоступен)."""
-    url = f"https://horo.mail.ru/prediction/{sign_slug}/today/"
-    headers = {"User-Agent": "Mozilla/5.0", "Accept-Language": "ru-RU,ru;q=0.9"}
-    r = requests.get(url, headers=headers, timeout=15)
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "html.parser")
-
-    containers = [
-        soup.select_one('[itemprop="articleBody"]'),
-        soup.select_one('.article__item_html'),
-        soup.select_one('.article__text'),
-        soup.select_one('[class*="article__text"]'),
-    ]
-    parts = []
-    for c in containers:
-        if not c:
-            continue
-        for p in c.select('p'):
-            t = p.get_text(" ", strip=True)
-            if not t:
-                continue
-            if any(b in t.lower() for b in ["читайте также", "поделиться", "реклама", "mail.ru"]):
-                continue
-            parts.append(t)
-        if parts:
-            break
-
-    if not parts:
-        for sel in ('meta[property="og:description"]', 'meta[name="description"]'):
-            m = soup.select_one(sel)
-            if m and m.get("content"):
-                return m["content"].strip()
-        return "Не удалось получить гороскоп на сегодня 😕"
-    return _clean_blocks(parts)
-
-def fetch_horoscope_dzen_turbo(day: str = "today") -> dict:
+def fetch_horoscope_yandex_all(day: str = "today") -> str:
     """
-    Парсим Turbo-страницу Дзена и возвращаем:
-    {"top": "<общий абзац>", "sections": ["Заголовок\\nТекст", ...]} — без 'для мужчин'.
+    Тянем гороскоп со статичной Turbo-страницы Дзена.
+    Берём верхний общий абзац + ВСЕ разделы (включая 'для мужчин').
     """
     suf = "na-segodnya" if day == "today" else "na-zavtra"
     url = f"https://dzen.ru/media-turbo/topic/horoscope-skorpion-{suf}"
@@ -131,68 +92,64 @@ def fetch_horoscope_dzen_turbo(day: str = "today") -> dict:
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
     }
+
     r = requests.get(url, headers=headers, timeout=15)
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
 
-    # общий верхний абзац
+    # 1) Общий верхний абзац — первый осмысленный <p>
     top = ""
     for p in soup.select("article p, main p, body p"):
-        t = p.get_text(" ", strip=True)
+        t = _clean(p.get_text(" ", strip=True))
         if t and len(t) > 30:
             top = t
             break
 
-    # разделы: ищем заголовки и собираем текст до следующего заголовка
+    # 2) Разделы.
+    # Ищем последовательность "Заголовок (h2/h3/strong/span) -> набор p/li/div до следующего заголовка".
     root = soup.select_one("article") or soup.select_one("main") or soup
     titles = root.find_all(["h2", "h3", "strong", "span"])
     sections = []
     i = 0
     while i < len(titles):
-        title = titles[i].get_text(" ", strip=True)
-        tl = title.lower()
+        title = _clean(titles[i].get_text(" ", strip=True))
+        if not title:
+            i += 1
+            continue
 
-        # интересующие тематические разделы
-        if any(k in tl for k in ["для женщин", "любов", "финанс", "здоров", "карьер", "работ", "семь", "друз"]):
-            # исключаем "для мужчин"
-            if "мужчин" in tl:
-                i += 1
-                continue
+        body_parts = []
+        for sib in titles[i].next_siblings:
+            if getattr(sib, "name", None) in ["h2", "h3", "strong", "span"]:
+                break
+            if getattr(sib, "name", None) in ["p", "li", "div"]:
+                txt = _clean(BeautifulSoup(str(sib), "html.parser").get_text(" ", strip=True))
+                if txt:
+                    body_parts.append(txt)
 
-            body_parts = []
-            for sib in titles[i].next_siblings:
-                if getattr(sib, "name", None) in ["h2", "h3", "strong", "span"]:
-                    break
-                if getattr(sib, "name", None) in ["p", "li", "div"]:
-                    txt = BeautifulSoup(str(sib), "html.parser").get_text(" ", strip=True)
-                    if txt:
-                        body_parts.append(txt)
+        body = _clean(" ".join(body_parts))
+        if body:
+            sections.append(f"{title}\n{body}")
 
-            body = _clean_blocks(body_parts)
-            if body:
-                sections.append(f"{title}\n{body}")
         i += 1
 
-    return {"top": _clean_text(top), "sections": sections}
+    # Если заголовки не нашлись, попробуем просто собрать все p после верхнего блока
+    if not sections:
+        ps = [_clean(p.get_text(" ", strip=True)) for p in root.select("p")]
+        ps = [t for t in ps if t]
+        if top and ps and ps[0] == top:
+            ps = ps[1:]
+        if ps:
+            sections = ps
 
-def fetch_horoscope_chain(day: str = "today") -> str:
-    """Основной источник — Dzen Turbo (с разделами), резерв — Mail.ru."""
-    try:
-        data = fetch_horoscope_dzen_turbo(day=day)
-        top = data.get("top", "")
-        sections = data.get("sections", [])
-        chunks = []
-        if top:
-            chunks.append(top)
-        if sections:
-            chunks.append("\n\n".join(sections))
-        txt = _clean_text("\n\n".join(chunks))
-        if txt:
-            return txt
-    except Exception:
-        pass
+    # 3) Склейка результата
+    chunks = []
+    if top:
+        chunks.append(top)
+    if sections:
+        chunks.append("\n\n".join(sections))
 
-    return fetch_horoscope_mail(sign_slug="scorpio")
+    final_text = _clean("\n\n".join(chunks))
+    return final_text or "Не удалось получить гороскоп на сегодня 😕"
 
 
 # ------------------- ОТПРАВКА ------------------- #
@@ -211,7 +168,7 @@ async def send_today_weather(bot_instance: Bot = None, chat_ids: list[str] = Non
         forecast = fetch_forecast_from_html(days_ahead=0)
         if include_horoscope:
             try:
-                horoscope = fetch_horoscope_chain(day="today")
+                horoscope = fetch_horoscope_yandex_all(day="today")
                 forecast = f"{forecast}\n\n🔮 Гороскоп на сегодня:\n{horoscope}"
             except Exception as he:
                 forecast = f"{forecast}\n\n🔮 Гороскоп на сегодня: не удалось получить ({he})"
@@ -238,27 +195,35 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start_bot():
     app = Application.builder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(MessageHandler(filters.TEXT, handle_button))
 
     loop = asyncio.get_running_loop()
     scheduler = AsyncIOScheduler(timezone=timezone("Europe/Moscow"))
+
     scheduler.add_job(
         lambda: asyncio.run_coroutine_threadsafe(send_today_weather(app.bot, include_horoscope=True), loop),
-        trigger='cron', hour=7, minute=0
+        trigger='cron',
+        hour=7,
+        minute=00
     )
     scheduler.add_job(
         lambda: asyncio.run_coroutine_threadsafe(send_tomorrow_weather(app.bot), loop),
-        trigger='cron', hour=22, minute=30
+        trigger='cron',
+        hour=22,
+        minute=30
     )
 
     scheduler.start()
     print("🤖 Бот запущен.")
     await app.run_polling()
 
+
 if __name__ == "__main__":
     import nest_asyncio
     nest_asyncio.apply()
+
     loop = asyncio.get_event_loop()
     loop.create_task(start_bot())
     loop.run_forever()
