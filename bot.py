@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 
 BOT_TOKEN = '7044099465:AAEKAmQZ5B-JFNLZgA5Ze661m6_FzQCpa4Y'
 USER_CHAT_IDS = ['457829882','191742166']
+HORO_SOURCE = "dzen_turbo"  # варианты: "dzen_turbo" | "mail"
 
 bot = Bot(token=BOT_TOKEN)
 
@@ -90,6 +91,7 @@ def fetch_forecast_from_html(days_ahead: int = 1) -> str:
 
     return f"📅 Прогноз на {date_str} 🔮:\n\n" + "\n\n".join(result)
 
+
 def fetch_horoscope_today(sign_slug: str = "scorpio") -> str:
     """
     Парсит основной текст гороскопа со страницы horo.mail.ru.
@@ -106,7 +108,6 @@ def fetch_horoscope_today(sign_slug: str = "scorpio") -> str:
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
 
-    # 1) базовый блок статьи
     containers = [
         soup.select_one('[itemprop="articleBody"]'),
         soup.select_one('.article__item_html'),
@@ -118,21 +119,18 @@ def fetch_horoscope_today(sign_slug: str = "scorpio") -> str:
     for c in containers:
         if not c:
             continue
-        # собираем p, исключая рекламные/служебные
         for p in c.select('p'):
             t = p.get_text(" ", strip=True)
             if not t:
                 continue
-            # фильтры служебных блоков
             if any(bad in t.lower() for bad in [
                 "читайте также", "поделиться", "реклама", "mail.ru"
             ]):
                 continue
             text_parts.append(t)
         if text_parts:
-            break  # нашли нормальный контейнер — выходим
+            break
 
-    # 2) если ничего не нашли — короткий фолбэк (meta)
     if not text_parts:
         og = soup.select_one('meta[property="og:description"]')
         if og and og.get("content"):
@@ -142,15 +140,68 @@ def fetch_horoscope_today(sign_slug: str = "scorpio") -> str:
             return desc["content"].strip()
         return "Не удалось получить гороскоп на сегодня 😕"
 
-    # Склеиваем абзацы в один текст
     text = " ".join(text_parts)
-
-    # лёгкая чистка лишних пробелов/повторов
     text = re.sub(r'\s{2,}', ' ', text).strip()
     return text
 
 
+def fetch_horoscope_dzen_turbo(day: str = "today") -> str:
+    """
+    Парсит текст гороскопа из Turbo-страницы Дзена для Скорпиона (без JS).
+    Работает с обычным requests + BeautifulSoup.
+    day: "today" | "tomorrow"
+    """
+    suf = "na-segodnya" if day == "today" else "na-zavtra"
+    url = f"https://dzen.ru/media-turbo/topic/horoscope-skorpion-{suf}"
 
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "ru-RU,ru;q=0.9",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+    r = requests.get(url, headers=headers, timeout=15)
+    r.raise_for_status()
+
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    containers = [
+        soup.select_one('[itemprop="articleBody"]'),
+        soup.select_one('article'),
+        soup.select_one('div[role="article"]'),
+        soup.select_one('section article'),
+        soup.select_one('main'),
+        soup  # последний шанс — весь документ
+    ]
+
+    parts: list[str] = []
+    for c in containers:
+        if not c:
+            continue
+        ps = c.select('p')
+        if not ps:
+            continue
+        for p in ps:
+            t = p.get_text(" ", strip=True)
+            if not t:
+                continue
+            low = t.lower()
+            if any(bad in low for bad in ["читайте также", "поделиться", "реклама", "яндекс дзен"]):
+                continue
+            parts.append(t)
+        if parts:
+            break
+
+    if not parts:
+        for sel in ('meta[property="og:description"]', 'meta[name="description"]'):
+            m = soup.select_one(sel)
+            if m and m.get("content"):
+                return m["content"].strip()
+        return "Не удалось получить гороскоп на сегодня 😕"
+
+    text = " ".join(parts)
+    text = re.sub(r"\s{2,}", " ", text).strip()
+    return text
 
 
 async def send_tomorrow_weather(bot_instance: Bot = None, chat_ids: list[str] = None):
@@ -168,7 +219,10 @@ async def send_today_weather(bot_instance: Bot = None, chat_ids: list[str] = Non
         forecast = fetch_forecast_from_html(days_ahead=0)
         if include_horoscope:
             try:
-                horoscope = fetch_horoscope_today(sign_slug="scorpio")
+                if HORO_SOURCE == "dzen_turbo":
+                    horoscope = fetch_horoscope_dzen_turbo(day="today")
+                else:
+                    horoscope = fetch_horoscope_today(sign_slug="scorpio")
                 forecast = f"{forecast}\n\n🔮 Гороскоп на сегодня:\n{horoscope}"
             except Exception as he:
                 # если гороскоп не распарсился — просто отправим погоду и мягкую пометку
@@ -179,7 +233,6 @@ async def send_today_weather(bot_instance: Bot = None, chat_ids: list[str] = Non
     except Exception as e:
         for chat_id in (chat_ids or USER_CHAT_IDS):
             await (bot_instance or bot).send_message(chat_id=chat_id, text=f"⚠️ Ошибка прогноза на сегодня: {e}")
-
 
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
