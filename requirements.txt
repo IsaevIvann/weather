@@ -8,6 +8,5 @@ python-telegram-bot
 apscheduler
 nest_asyncio
 pytz
-
 python-dotenv    # можно убрать на проде, но не мешает
-openai           # только если реально используешь советы
+openai>=1.40.0

@@ -268,42 +268,66 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
 def _gpt_comment(forecast_text: str) -> str:
     """
     Возвращает короткий совет (если задан OPENAI_API_KEY).
-    Без ключа — вернёт пустую строку и не помешает работе бота.
+    Пытается сначала через openai>=1.x (OpenAI client), затем fallback на старый SDK.
+    Любая ошибка логируется, но не ломает бота.
     """
     if not OPENAI_API_KEY:
+        print("[gpt-comment] пропуск: OPENAI_API_KEY пуст")
         return ""
-    try:
-        try:
-            import openai  # pip install openai
-        except Exception:
-            return ""
 
-        # Вариант для библиотеки openai<1.0 (совместимость со старым кодом):
-        openai.api_key = OPENAI_API_KEY
-        prompt = (
-            "На основе этого прогноза погоды кратко дай 1–2 конкретных совета: "
-            "нужен ли зонт, как одеться, и идею для досуга. До 220 символов, дружелюбно, по-русски. "
-            "Без повторения самих цифр, без воды.\n\n"
-            f"{forecast_text}"
-        )
-        resp = openai.ChatCompletion.create(
-            model="gpt-5",
+    system_prompt = "Ты лаконичный погодный ассистент."
+    user_prompt = (
+        "На основе этого прогноза погоды кратко дай 1–2 конкретных совета: "
+        "нужен ли зонт, как одеться, и идею для досуга. До 220 символов, дружелюбно, по-русски. "
+        "Без повторения самих цифр, без воды.\n\n"
+        f"{forecast_text}"
+    )
+
+    # Модель можно задать через переменную окружения (удобно для экспериментов)
+    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+    # --- Попытка №1: новый SDK (openai>=1.x) ---
+    try:
+        from openai import OpenAI  # type: ignore
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        resp = client.chat.completions.create(
+            model=model,
             messages=[
-                {"role": "system", "content": "Ты лаконичный погодный ассистент."},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.7,
+            max_tokens=120,
+            timeout=10,  # чтобы не зависало
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        if not text:
+            print("[gpt-comment] пустой ответ от нового SDK")
+        return text
+    except Exception as e_new:
+        print(f"[gpt-comment] новый SDK не сработал: {e_new}")
+
+    # --- Попытка №2: старый SDK (openai<1.0) ---
+    try:
+        import openai  # type: ignore
+        openai.api_key = OPENAI_API_KEY
+        resp = openai.ChatCompletion.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
             ],
             temperature=0.7,
             max_tokens=120,
         )
-        txt = resp["choices"][0]["message"]["content"].strip()
-        return txt
-    except Exception:
+        text = resp["choices"][0]["message"]["content"].strip()
+        if not text:
+            print("[gpt-comment] пустой ответ от старого SDK")
+        return text
+    except Exception as e_old:
+        print(f"[gpt-comment] старый SDK не сработал: {e_old}")
         return ""
 
-
-# =========================
-# Отправка сообщений
-# =========================
 
 async def send_tomorrow_weather(bot_instance: Bot = None, chat_ids: list[str] = None):
     target_ids = chat_ids or USER_CHAT_IDS
