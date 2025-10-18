@@ -8,7 +8,7 @@ from telegram.ext import Application, MessageHandler, ContextTypes, CommandHandl
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime, timedelta
 
-
+# --- ничего не меняю ---
 BOT_TOKEN = '7044099465:AAEKAmQZ5B-JFNLZgA5Ze661m6_FzQCpa4Y'
 USER_CHAT_IDS = ['457829882','191742166']
 
@@ -29,6 +29,9 @@ CONDITIONS = {
 
 RU_PARTS = {'morning': 'Утром', 'day': 'Днём', 'evening': 'Вечером'}
 ICONS = {'morning': '🌅', 'day': '🏙️ ', 'evening': '🌙'}
+
+# >>> GPT: необязательный ключ. Если пусто — бот работает как прежде (без советов).
+OPENAI_API_KEY = "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"  # вставь сюда ключ при желании
 
 
 def fetch_forecast_from_html(days_ahead: int = 1) -> str:
@@ -240,11 +243,47 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
     return f"Не удалось получить гороскоп на сегодня 😕 (ошибка: {last_err})"
 
 
+# >>> GPT: компактная функция-комментарий. Без ключа/библиотеки — вернёт "" и не помешает работе.
+def _gpt_comment(forecast_text: str) -> str:
+    if not OPENAI_API_KEY:
+        return ""
+    try:
+        try:
+            import openai
+        except Exception:
+            return ""
+        openai.api_key = OPENAI_API_KEY
+
+        prompt = (
+            "На основе этого прогноза погоды кратко дай 1–2 конкретных совета: "
+            "нужен ли зонт, как одеться, и идею для досуга. До 220 символов, дружелюбно, по-русски. "
+            "Без повторения самих цифр, без воды.\n\n"
+            f"{forecast_text}"
+        )
+
+        resp = openai.ChatCompletion.create(
+            model="gpt-5",
+            messages=[
+                {"role": "system", "content": "Ты лаконичный погодный ассистент."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=120,
+        )
+        txt = resp["choices"][0]["message"]["content"].strip()
+        return txt
+    except Exception:
+        return ""
 
 
 async def send_tomorrow_weather(bot_instance: Bot = None, chat_ids: list[str] = None):
     try:
         forecast = fetch_forecast_from_html(days_ahead=1)
+        # >>> GPT: добавляем совет, если получится
+        comment = _gpt_comment(forecast)
+        if comment:
+            forecast = f"{forecast}\n\n💡 {comment}"
+
         for chat_id in (chat_ids or USER_CHAT_IDS):
             await (bot_instance or bot).send_message(chat_id=chat_id, text=forecast)
     except Exception as e:
@@ -254,6 +293,11 @@ async def send_tomorrow_weather(bot_instance: Bot = None, chat_ids: list[str] = 
 async def send_today_weather(bot_instance: Bot = None, chat_ids: list[str] = None, include_horoscope: bool = False):
     try:
         forecast = fetch_forecast_from_html(days_ahead=0)
+        # >>> GPT: добавляем совет, если получится
+        comment = _gpt_comment(forecast)
+        if comment:
+            forecast = f"{forecast}\n\n💡 {comment}"
+
         if include_horoscope:
             try:
                 horoscope = fetch_horoscope_yandex_all(day="today")
