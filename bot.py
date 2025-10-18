@@ -78,7 +78,7 @@ HORO_EMOJIS = {
 def fetch_forecast_from_html(days_ahead: int = 1) -> str:
     headers = {
         "User-Agent": "Mozilla/5.0",
-        "Accept-Language": "ру-RU,ru;q=0.9",
+        "Accept-Language": "ru-RU,ru;q=0.9",  # ← только латиница!
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
     }
