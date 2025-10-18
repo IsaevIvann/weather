@@ -1,3 +1,4 @@
+import os
 import re
 import requests
 import asyncio
@@ -8,11 +9,39 @@ from telegram.ext import Application, MessageHandler, ContextTypes, CommandHandl
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime, timedelta
 
-# --- ничего не меняю ---
-BOT_TOKEN = '7044099465:AAEKAmQZ5B-JFNLZgA5Ze661m6_FzQCpa4Y'
-USER_CHAT_IDS = ['457829882','191742166']
+# =========================
+# Конфигурация из окружения
+# =========================
+
+# Если запускаешь локально — удобно использовать python-dotenv.
+# В проде (render/railway/docker/systemd) .env обычно не нужен — переменные задаются в окружении сервиса.
+try:
+    from dotenv import load_dotenv  # pip install python-dotenv
+    load_dotenv()
+except Exception:
+    pass  # нет python-dotenv — не страшно, просто читаем из окружения
+
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+if not BOT_TOKEN:
+    raise RuntimeError("Не задан BOT_TOKEN в переменных окружения")
+
+# Список ID через запятую: "457829882,191742166"
+USER_CHAT_IDS = [cid.strip() for cid in os.getenv("USER_CHAT_IDS", "").split(",") if cid.strip()]
+if not USER_CHAT_IDS:
+    # Можно задать дефолт, но лучше явно указать в .env
+    USER_CHAT_IDS = []
+
+# Необязательный ключ для советов GPT (оставь пустым — будет работать без советов)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+
+# Город можно вынести в переменную, по умолчанию Москва
+WEATHER_URL = os.getenv("WEATHER_URL", "https://yandex.ru/pogoda/moscow/details").strip()
 
 bot = Bot(token=BOT_TOKEN)
+
+# =========================
+# Константы
+# =========================
 
 CONDITIONS = {
     "ясно": "ну, тут ваще всё ясно, малая может сиять ☀️🤙",
@@ -30,12 +59,12 @@ CONDITIONS = {
 RU_PARTS = {'morning': 'Утром', 'day': 'Днём', 'evening': 'Вечером'}
 ICONS = {'morning': '🌅', 'day': '🏙️ ', 'evening': '🌙'}
 
-# >>> GPT: необязательный ключ. Если пусто — бот работает как прежде (без советов).
-OPENAI_API_KEY = "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"  # вставь сюда ключ при желании
 
+# =========================
+# Погода
+# =========================
 
 def fetch_forecast_from_html(days_ahead: int = 1) -> str:
-    url = "https://yandex.ru/pogoda/moscow/details"
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept-Language": "ru-RU,ru;q=0.9",
@@ -43,19 +72,19 @@ def fetch_forecast_from_html(days_ahead: int = 1) -> str:
         "Pragma": "no-cache",
     }
 
-    # 1) «Сегодня» в Москве, а не по часовому поясу сервера
+    # «Сегодня» по Москве, а не по часовому поясу сервера
     mz = timezone("Europe/Moscow")
     target_dt = datetime.now(mz).date() + timedelta(days=days_ahead)
     iso = target_dt.strftime("%Y-%m-%d")
 
-    resp = requests.get(url, headers=headers, timeout=15)
+    resp = requests.get(WEATHER_URL, headers=headers, timeout=15)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # 2) Сначала — точное совпадение по data-day
+    # 1) Точное совпадение по data-day
     target_article = soup.select_one(f'article[data-day="{iso}"]')
 
-    # 3) Если нет — подбираем ближайшую по дате из всех карточек
+    # 2) Ближайшая по дате карточка
     if not target_article:
         closest = None
         best_delta = None
@@ -69,27 +98,22 @@ def fetch_forecast_from_html(days_ahead: int = 1) -> str:
                 closest, best_delta = art, delta
         target_article = closest
 
-    # 4) Если и тут пусто — берём первую карточку на странице (обычно это сегодня)
+    # 3) Первая карточка (fallback)
     if not target_article:
         arts = soup.select("article[data-day]")
         if arts:
             target_article = arts[0]
 
     if not target_article:
-        raise Exception(f"Не найден блок прогноза для даты {target_dt.strftime('%-d %B')}")
+        raise Exception(f"Не найден блок прогноза для {iso}")
 
-    # 5) Человеческая дата в русском виде
     months_ru = [
         "", "января", "февраля", "марта", "апреля", "мая", "июня",
         "июля", "августа", "сентября", "октября", "ноября", "декабря",
     ]
     date_str = f"{target_dt.day} {months_ru[target_dt.month]}".capitalize()
 
-    # 6) Разбор утро/день/вечер
     mapping = {"m": "morning", "d": "day", "e": "evening"}
-    RU_PARTS = {'morning': 'Утром', 'day': 'Днём', 'evening': 'Вечером'}
-    ICONS = {'morning': '🌅', 'day': '🏙️ ', 'evening': '🌙'}
-
     result = []
     for prefix, key in mapping.items():
         part = target_article.select_one(f'[style="grid-area:{prefix}-part"]')
@@ -115,22 +139,20 @@ def fetch_forecast_from_html(days_ahead: int = 1) -> str:
 def _clean(txt: str) -> str:
     return re.sub(r"\s{2,}", " ", (txt or "").strip())
 
+
 def fetch_horoscope_yandex_all(day: str = "today") -> str:
     """
-    Яндекс / Дзен: requests + BeautifulSoup.
-    Берём верхний общий абзац + ВСЕ разделы (Женщины/Любовь/Финансы…),
-    исключая "Для мужчин". Каждый раздел с новой строки.
-    Работает и для обычной страницы темы, и для Turbo.
+    Яндекс/Дзен. Берём верхний абзац + все разделы (кроме 'Для мужчин').
     """
     suf = "na-segodnya" if day == "today" else "na-zavtra"
     urls = [
-        "https://dzen.ru/topic/horoscope-skorpion",                         # обычная тема
-        f"https://dzen.ru/media-turbo/topic/horoscope-skorpion-{suf}",      # turbo-страница на сегодня/завтра
-        "https://dzen.ru/media-turbo/topic/horoscope-skorpion",             # общий turbo
+        "https://dzen.ru/topic/horoscope-skorpion",
+        f"https://dzen.ru/media-turbo/topic/horoscope-skorpion-{suf}",
+        "https://dzen.ru/media-turbo/topic/horoscope-skorpion",
     ]
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "ru-RU,ru;q=0.9",
         "Cache-Control": "no-cache",
@@ -139,7 +161,7 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
         "Connection": "keep-alive",
     }
 
-    def _clean(s: str) -> str:
+    def _c(s: str) -> str:
         return re.sub(r"\s{2,}", " ", (s or "").replace("\xa0", " ").strip())
 
     last_err = None
@@ -154,24 +176,23 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
 
             soup = BeautifulSoup(html, "html.parser")
 
-            # 1) Верхний общий абзац
+            # Верхний общий абзац
             top = ""
             span = soup.select_one(
                 'div[class^="topic-channel--horoscope-widget__textBlock-"] '
                 'span[class^="topic-channel--rich-text__text-"]'
             )
             if span:
-                top = _clean(span.get_text(" ", strip=True))
+                top = _c(span.get_text(" ", strip=True))
 
-            # fallback — первый осмысленный <p>
             if not top:
                 for p in soup.select("article p, main p, body p"):
-                    t = _clean(p.get_text(" ", strip=True))
+                    t = _c(p.get_text(" ", strip=True))
                     if t and len(t) > 30:
                         top = t
                         break
 
-            # 2) Разделы (карточки)
+            # Разделы
             sections = []
             container = soup.select_one('div[class^="topic-channel--horoscope-widget__items-"]') or soup
             items = container.select('div[class^="topic-channel--horoscope-widget__item-"]')
@@ -180,32 +201,31 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
                 title_el = it.select_one('div[class^="topic-channel--horoscope-widget__itemTitle-"]')
                 text_el = it.select_one('div[class^="topic-channel--horoscope-widget__itemText-"]')
 
-                title = _clean(title_el.get_text(" ", strip=True)) if title_el else ""
+                title = _c(title_el.get_text(" ", strip=True)) if title_el else ""
                 if title.lower().startswith("для мужчин"):
-                    continue  # ⛔️ пропускаем блок "Для мужчин"
+                    continue
 
                 if text_el:
-                    body = _clean(text_el.get_text(" ", strip=True))
+                    body = _c(text_el.get_text(" ", strip=True))
                 else:
                     parts = [
-                        _clean(e.get_text(" ", strip=True))
+                        _c(e.get_text(" ", strip=True))
                         for e in it.select("p, li")
-                        if _clean(e.get_text(" ", strip=True))
+                        if _c(e.get_text(" ", strip=True))
                     ]
-                    body = _clean(" ".join(parts))
+                    body = _c(" ".join(parts))
 
                 if title or body:
                     formatted = f"**{title}**\n{body}" if title else body
                     sections.append(formatted.strip())
 
-            # 3) fallback: заголовки → параграфы
             if not sections:
                 root = soup.select_one("article") or soup.select_one("main") or soup
                 if root:
                     titles = root.find_all(["h2", "h3", "strong", "span"])
                     i = 0
                     while i < len(titles):
-                        t = _clean(titles[i].get_text(" ", strip=True))
+                        t = _c(titles[i].get_text(" ", strip=True))
                         if not t or t.lower().startswith("для мужчин"):
                             i += 1
                             continue
@@ -217,13 +237,11 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
                                 txt = BeautifulSoup(str(sib), "html.parser").get_text(" ", strip=True)
                                 if txt:
                                     body_parts.append(txt)
-                        body = _clean(" ".join(body_parts))
+                        body = _c(" ".join(body_parts))
                         if body:
-                            formatted = f"**{t}**\n{body}"
-                            sections.append(formatted)
+                            sections.append(f"**{t}**\n{body}")
                         i += 1
 
-            # 4) Форматирование
             chunks = []
             if top:
                 chunks.append(top)
@@ -243,24 +261,31 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
     return f"Не удалось получить гороскоп на сегодня 😕 (ошибка: {last_err})"
 
 
-# >>> GPT: компактная функция-комментарий. Без ключа/библиотеки — вернёт "" и не помешает работе.
+# =========================
+# Небольшой совет от GPT
+# =========================
+
 def _gpt_comment(forecast_text: str) -> str:
+    """
+    Возвращает короткий совет (если задан OPENAI_API_KEY).
+    Без ключа — вернёт пустую строку и не помешает работе бота.
+    """
     if not OPENAI_API_KEY:
         return ""
     try:
         try:
-            import openai
+            import openai  # pip install openai
         except Exception:
             return ""
-        openai.api_key = OPENAI_API_KEY
 
+        # Вариант для библиотеки openai<1.0 (совместимость со старым кодом):
+        openai.api_key = OPENAI_API_KEY
         prompt = (
             "На основе этого прогноза погоды кратко дай 1–2 конкретных совета: "
             "нужен ли зонт, как одеться, и идею для досуга. До 220 символов, дружелюбно, по-русски. "
             "Без повторения самих цифр, без воды.\n\n"
             f"{forecast_text}"
         )
-
         resp = openai.ChatCompletion.create(
             model="gpt-5",
             messages=[
@@ -276,24 +301,29 @@ def _gpt_comment(forecast_text: str) -> str:
         return ""
 
 
+# =========================
+# Отправка сообщений
+# =========================
+
 async def send_tomorrow_weather(bot_instance: Bot = None, chat_ids: list[str] = None):
+    target_ids = chat_ids or USER_CHAT_IDS
     try:
         forecast = fetch_forecast_from_html(days_ahead=1)
-        # >>> GPT: добавляем совет, если получится
         comment = _gpt_comment(forecast)
         if comment:
             forecast = f"{forecast}\n\n💡 {comment}"
 
-        for chat_id in (chat_ids or USER_CHAT_IDS):
+        for chat_id in target_ids:
             await (bot_instance or bot).send_message(chat_id=chat_id, text=forecast)
     except Exception as e:
-        for chat_id in (chat_ids or USER_CHAT_IDS):
+        for chat_id in target_ids:
             await (bot_instance or bot).send_message(chat_id=chat_id, text=f"⚠️ Ошибка прогноза на завтра: {e}")
 
+
 async def send_today_weather(bot_instance: Bot = None, chat_ids: list[str] = None, include_horoscope: bool = False):
+    target_ids = chat_ids or USER_CHAT_IDS
     try:
         forecast = fetch_forecast_from_html(days_ahead=0)
-        # >>> GPT: добавляем совет, если получится
         comment = _gpt_comment(forecast)
         if comment:
             forecast = f"{forecast}\n\n💡 {comment}"
@@ -305,19 +335,22 @@ async def send_today_weather(bot_instance: Bot = None, chat_ids: list[str] = Non
             except Exception as he:
                 forecast = f"{forecast}\n\n🔮 Гороскоп на сегодня: не удалось получить ({he})"
 
-        for chat_id in (chat_ids or USER_CHAT_IDS):
+        for chat_id in target_ids:
             await (bot_instance or bot).send_message(chat_id=chat_id, text=forecast)
     except Exception as e:
-        for chat_id in (chat_ids or USER_CHAT_IDS):
+        for chat_id in target_ids:
             await (bot_instance or bot).send_message(chat_id=chat_id, text=f"⚠️ Ошибка прогноза на сегодня: {e}")
 
 
-# ------------------- БОТ ------------------- #
+# =========================
+# Telegram-бот
+# =========================
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text == "🌤 Прогноз на завтра":
+    text = (update.message.text or "").strip()
+    if text == "🌤 Прогноз на завтра":
         await send_tomorrow_weather(chat_ids=[update.effective_chat.id])
-    elif update.message.text == "🌞 Прогноз на сегодня":
+    elif text == "🌞 Прогноз на сегодня":
         await send_today_weather(chat_ids=[update.effective_chat.id], include_horoscope=True)
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -327,9 +360,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start_bot():
     app = Application.builder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(MessageHandler(filters.TEXT, handle_button))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_button))
 
     loop = asyncio.get_running_loop()
     scheduler = AsyncIOScheduler(timezone=timezone("Europe/Moscow"))
@@ -338,7 +370,7 @@ async def start_bot():
         lambda: asyncio.run_coroutine_threadsafe(send_today_weather(app.bot, include_horoscope=True), loop),
         trigger='cron',
         hour=7,
-        minute=00
+        minute=0
     )
     scheduler.add_job(
         lambda: asyncio.run_coroutine_threadsafe(send_tomorrow_weather(app.bot), loop),
