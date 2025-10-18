@@ -59,6 +59,17 @@ CONDITIONS = {
 RU_PARTS = {'morning': 'Утром', 'day': 'Днём', 'evening': 'Вечером'}
 ICONS = {'morning': '🌅', 'day': '🏙️ ', 'evening': '🌙'}
 
+# Эмодзи для заголовков гороскопа
+HORO_EMOJIS = {
+    "для женщин": "👩‍🦰",
+    "любовь": "❤️",
+    "финансы": "💰",
+    "здоровье": "💪",
+    "карьера": "💼",
+    "семья": "🏡",
+    "друзья": "🤝",
+    "совет": "💫",
+}
 
 # =========================
 # Погода
@@ -67,7 +78,7 @@ ICONS = {'morning': '🌅', 'day': '🏙️ ', 'evening': '🌙'}
 def fetch_forecast_from_html(days_ahead: int = 1) -> str:
     headers = {
         "User-Agent": "Mozilla/5.0",
-        "Accept-Language": "ru-RU,ru;q=0.9",
+        "Accept-Language": "ру-RU,ru;q=0.9",
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
     }
@@ -143,6 +154,7 @@ def _clean(txt: str) -> str:
 def fetch_horoscope_yandex_all(day: str = "today") -> str:
     """
     Яндекс/Дзен. Берём верхний абзац + все разделы (кроме 'Для мужчин').
+    Заголовки разделов оформляем эмодзи вместо **жирного**.
     """
     suf = "na-segodnya" if day == "today" else "na-zavtra"
     urls = [
@@ -215,10 +227,18 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
                     ]
                     body = _c(" ".join(parts))
 
-                if title or body:
-                    formatted = f"**{title}**\n{body}" if title else body
-                    sections.append(formatted.strip())
+                # Заголовок -> эмодзи
+                emoji = ""
+                tl = title.lower()
+                for key, val in HORO_EMOJIS.items():
+                    if key in tl:
+                        emoji = val + " "
+                        break
 
+                formatted = f"{emoji}{title}\n{body}" if title else body
+                sections.append(formatted.strip())
+
+            # Fallback: если карточек не нашли — пробуем заголовки/параграфы
             if not sections:
                 root = soup.select_one("article") or soup.select_one("main") or soup
                 if root:
@@ -238,8 +258,17 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
                                 if txt:
                                     body_parts.append(txt)
                         body = _c(" ".join(body_parts))
+
+                        # Заголовок -> эмодзи (fallback тоже оформляем)
+                        emoji = ""
+                        tl = t.lower()
+                        for key, val in HORO_EMOJIS.items():
+                            if key in tl:
+                                emoji = val + " "
+                                break
+
                         if body:
-                            sections.append(f"**{t}**\n{body}")
+                            sections.append(f"{emoji}{t}\n{body}".strip())
                         i += 1
 
             chunks = []
@@ -250,6 +279,9 @@ def fetch_horoscope_yandex_all(day: str = "today") -> str:
 
             result = "\n\n".join(chunks).strip()
             result = re.sub(r"\s{3,}", "\n\n", result)
+
+            # На всякий случай убираем оставшиеся ** если где-то всплыли
+            result = result.replace("**", "")
 
             if result:
                 return result
@@ -328,6 +360,10 @@ def _gpt_comment(forecast_text: str) -> str:
         print(f"[gpt-comment] старый SDK не сработал: {e_old}")
         return ""
 
+
+# =========================
+# Отправка сообщений
+# =========================
 
 async def send_tomorrow_weather(bot_instance: Bot = None, chat_ids: list[str] = None):
     target_ids = chat_ids or USER_CHAT_IDS
@@ -415,5 +451,3 @@ if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.create_task(start_bot())
     loop.run_forever()
-
-#
