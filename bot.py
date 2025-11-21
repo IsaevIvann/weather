@@ -1,4 +1,5 @@
 import os
+import random  # ← добавили для утренних фраз
 import requests
 import asyncio
 from bs4 import BeautifulSoup
@@ -46,6 +47,28 @@ CONDITIONS = {
 
 RU_PARTS = {'morning': 'Утром', 'day': 'Днём', 'evening': 'Вечером'}
 ICONS = {'morning': '🌅', 'day': '🏙️ ', 'evening': '🌙'}
+
+# =========================
+# Утренние фразы (рандом)
+# =========================
+
+MORNING_PHRASES = [
+    "Сегодня только газ, порви всех, мау 🫶",
+    "Хорошего тебе дня, пусть всё складывается того рот как четко! 🌿",
+    "Джус, пусть сегодня будет чуть больше приятных мелочей ✨",
+    "Мауч, Хорошего тебе продуктивного дня ☀️",
+    "Джумс, пусть день подарит что-то доброе и неожиданное 💛",
+    "Пусть этот день будет спокойным и приятным, иншаллах 💫",
+    "Лёгкого и уютного начала дня тебе 🌸",
+    "Пусть сегодня тебя ждут хорошие новости 🌞",
+    "Хорошего дня, береги своё настроение 💐",
+]
+
+def _get_random_morning_phrase() -> str:
+    try:
+        return random.choice(MORNING_PHRASES)
+    except Exception:
+        return ""
 
 # =========================
 # Погода
@@ -122,7 +145,7 @@ def fetch_forecast_from_html(days_ahead: int = 1) -> str:
     return f"📅 Прогноз на {date_str} 🔮:\n\n" + "\n\n".join(result)
 
 # =========================
-# Отправка сообщений (только погода)
+# Отправка сообщений
 # =========================
 async def send_tomorrow_weather(bot_instance: Bot = None, chat_ids: list[str] = None):
     target_ids = chat_ids or USER_CHAT_IDS
@@ -138,6 +161,12 @@ async def send_today_weather(bot_instance: Bot = None, chat_ids: list[str] = Non
     target_ids = chat_ids or USER_CHAT_IDS
     try:
         forecast = fetch_forecast_from_html(days_ahead=0)
+
+        # Добавляем тёплую утреннюю фразу
+        phrase = _get_random_morning_phrase()
+        if phrase:
+            forecast = f"{forecast}\n\n💛 {phrase}"
+
         for chat_id in target_ids:
             await (bot_instance or bot).send_message(chat_id=chat_id, text=forecast)
     except Exception as e:
@@ -167,7 +196,7 @@ async def start_bot():
     loop = asyncio.get_running_loop()
     scheduler = AsyncIOScheduler(timezone=timezone("Europe/Moscow"))
 
-    # Автоматические отправки (только погода)
+    # Автоматические отправки
     scheduler.add_job(
         lambda: asyncio.run_coroutine_threadsafe(send_today_weather(app.bot), loop),
         trigger='cron',
