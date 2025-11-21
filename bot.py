@@ -8,9 +8,6 @@ from telegram.ext import Application, MessageHandler, ContextTypes, CommandHandl
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime, timedelta
 
-# =========================
-# Конфигурация из окружения
-# =========================
 try:
     from dotenv import load_dotenv  # pip install python-dotenv
     load_dotenv()
